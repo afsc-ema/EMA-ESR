@@ -1,0 +1,1083 @@
+---
+title: "LD_test_ESR_2024"
+output: html_document
+date: "2025-07-14"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Libraries   
+```{r}
+library(EMAdownload)
+library(tidyverse)
+```
+
+# NBS VAST 
+# Pull in data
+```{r}
+all.tax <- get_ema_taxonomy()
+# QUESTIONS should we include the sand lance unident in this? tsn: 171671
+tsn <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672)
+this.year <- 2024
+# so all data 2002 and before either had less than great data (1996 - 2001); 2002 used a smaller trawl so 
+# people don't tend to use that data. 
+# NO SURVEY in 2008 & 2020. unsure which in 2009;
+# cruise_ids <- c("SS0301", "SS0401", "SS0501", "SS0601", "DY0702", "EE0901", "EE1001", "BE1101", "BE1201",
+#                 "BE1301", "AE1401", "AE1501", "CF1601", "NW1705", "NW1801", "NW1901", "NW2101", 
+#                 "NW2202", "NW2401")
+
+# check to make sure those are the species we want
+subset(all.tax, species_tsn %in% c(tsn))
+
+# best to not continuously re run this line of code cause it throws strange errors
+# instead you should remove the previous "catch" data in the global environment and re run if you want to
+catch <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
+                         tsn = tsn, trawl_method = "S", catch0 = TRUE) 
+# run it once and then adjust output
+
+# we want just the NBS surveys (cruise_ids listed above)
+# all salmon should just be juveniles
+# For saffron code, herring, capelin, sandlance - group all LHS stages 
+# if you include squid - its all squid species in database
+# if you include jellyfish - its Aequorea sp, aurelia sp chrysora, cyanea, staurophora, and phacellephora
+# include only region between 59.9 and 65.5
+nbs.ts <-catch %>%
+  dplyr::select(-c(akfin_load_date.x, akfin_load_date.y, oceanographic_domain, bsierp_region,
+                   gear_in_time, gear_in_latitude, gear_in_longitude, gear_out_time, gear_out_latitude,
+                   gear_out_longitude, race_code, nodc_code)) %>%
+  # filter the lat/lon
+  filter(eq_latitude > 59.9,
+         eq_latitude < 65.5) %>%
+  unite(combo, c(species_tsn, lhs_code), remove = F) %>%
+  filter(lhs_code != "IM") %>% # remove all non-juvenile salmon species
+  filter(!(combo %in% c("934083_A1+", "934083_A2+", "934083_A1","934083_U", "934083_A", # remove all non a0 pollock
+                        "164711_U", # this is individuals with unknown lhs for pacific cod (keep only a0)
+                        "161977_U"))) %>% # this is an unknown lhs for coho salmon
+  unite(name_lhs, c(common_name, lhs_code), remove = F) %>%
+  #subset(cruise_id %in% c(cruise_ids)) %>%
+  mutate(total_catch_weight_kg = total_catch_weight/1000,
+         cpue_kgkm2 = total_catch_weight_kg/effort,
+        haul_date = format(eq_time, "%m/%d/%Y"),
+        cpue_weight_kg = cpue_weight/1000) %>%
+  pivot_wider(., id_cols = c(station_id, sample_year, cruise_id, haul_date, eq_time, eq_latitude,
+                             eq_longitude, effort, effort_units), 
+              names_from = "name_lhs", values_from = "total_catch_weight_kg") %>%
+  arrange(station_id) %>% # now lets add up the values
+  rowwise() %>%
+  mutate(`Saffron Cod_All` = sum(`Saffron Cod_U`, `Saffron Cod_A1+`, `Saffron Cod_A0`),
+         `Pacific Herring_All` = sum(`Pacific Herring_U`, `Pacific Herring_A0`, `Pacific Herring_A1+`),
+         `Capelin_All` = sum(`Capelin_U`, `Capelin_A0`, `Capelin_A1+`),
+         `Arctic Sand Lance_All`= sum(`Arctic Sand Lance_A1+`, `Arctic Sand Lance_A0`),
+         `Rainbow Smelt_All` = sum(`Rainbow Smelt_A1+`, `Rainbow Smelt_A0`, `Rainbow Smelt_U`),
+         Forage = sum(`Saffron Cod_All`, `Pacific Herring_All`, `Capelin_All`, `Rainbow Smelt_All`,
+                      `Chum Salmon_J`, `Coho Salmon_J`, `Chinook Salmon_J`, `Pink Salmon_J`, `Sockeye Salmon_J`,
+                      `Pollock_A0`, `Pacific Cod_A0`))
+
+# the output is kg of catch (not effort corrected) for each species
+# spot check 
+head(nbs.ts)
+
+# number of stations per year
+NBS.sample.size <- nbs.ts %>%
+  group_by(sample_year) %>%
+  dplyr::summarize(n()) # this is slight diff in 2014 for n because akfin removed the U and A tows 
+# see below. 
+#write.csv(sample.size, paste0("NBS_updated_sample_size_", this.year, ".csv"))
+```
+
+## compare w/ EY timeseries
+read in ellens timeseries to do some comparisons
+```{r}
+ey_ts <- read.csv("Ellen_ESR_NBS_10_01_24_v2.csv")
+
+length(unique(ey_ts$StationID)) # 928 stations
+length(unique(nbs.ts$station_id)) # 926
+
+
+
+anti_join(ey_ts, nbs.ts, by = c("StationID" = "station_id"))
+# two stationIDs in ellen's timeseries that aren't in the akfin pull
+anti_join(nbs.ts, ey_ts, by = c("station_id" = "StationID"))
+# nothing in nbs that isn't in ellen's
+
+print(filter(nbs.ts, sample_year == 2014) %>% arrange(station_id), n = 46)
+filter(catch, station_id %in% c(20140901018, 20140901037))
+# okay the differences between ellen's timeseries and this one from akfin is beecuase the akfin one removed the U and A gear performance. 
+# So we're good to move forward!
+ey_ts2 <- dplyr::select(ey_ts, -c("A0_Scod", "A1pl_Scod", "Scod", "Squid","Jellyfish", "J_Sockeye_Num")) %>%
+  filter(!(StationID %in% c(20140901018, 20140901037)))
+ey_sums <- colSums(ey_ts2[-c(1:6)])
+names(ey_sums) <- c("Capelin_All", "Chinook Salmon_J", "Chum Salmon_J", "Coho Salmon_J",
+                                    "Pacific Cod_A0", "Pacific Herring_All", "Pink Salmon_J",
+                                    "Pollock_A0", "Rainbow Smelt_All", "Saffron Cod_All",
+                                    "Sockeye Salmon_J","Forage")
+ey.df <- as.data.frame(ey_sums) %>%
+  rownames_to_column("name")
+nbs.ts2 <- as.data.frame(colSums(nbs.ts[-c(1:9)])) %>%
+  rownames_to_column("name")
+colnames(nbs.ts2) <- c("name", "sums")
+nbs.ts2 %>%
+  filter(!(name %in% c("Pacific Herring_U", "Arctic Sand Lance_U", "Capelin_U", "Rainbow Smelt_U", "Saffron Code_A1+",
+                       "Saffron Cod_A0", "Pacific Herring_A1+", "Pacific Herring_A0", "Capelin_A0", "Capelin_A1+"))) %>%
+  left_join(ey.df) %>%
+  mutate(comp = ifelse(sums == ey_sums, TRUE, "Diff"))
+
+### So there are differences in Pcod_A0, Capelin_all,
+# lets specifically look at each one and find differences
+# Lets start with Pacific cod A0
+akfin_pcod <- dplyr::select(nbs.ts, c(station_id, sample_year, haul_date, `Pacific Cod_A0`)) %>%
+  dplyr::rename(pcod_a0 = `Pacific Cod_A0`) %>%
+  mutate(pcod_a0 = signif(pcod_a0, digits =  3))
+ey_pcod <- dplyr::select(ey_ts2, c(StationID, Year, HaulDate, A0_Pcod)) %>%
+  mutate(A0_Pcod = signif(A0_Pcod, digits =  3))
+nrow(akfin_pcod); nrow(ey_pcod)
+
+test <- left_join(akfin_pcod, ey_pcod, by = c("station_id"="StationID")) %>%
+  mutate(double = signif(pcod_a0 + A0_Pcod, digits = 3), 
+         match = ifelse(double < (2*pcod_a0), "No_match", "maybe"))
+filter(test, match == "No_match")
+# right the pcod WONT EVER MATCH cause in 2021 there were pcod but they had gotten into the database as ninespine
+# moving on to CAPELIN
+akfin <- dplyr::select(nbs.ts, c(station_id, sample_year, haul_date, `Capelin_All`)) %>%
+  mutate(Capelin_All = signif(Capelin_All, digits =  3))
+ey <- dplyr::select(ey_ts2, c(StationID, Year, HaulDate, Capelin)) %>%
+  mutate(Capelin = signif(Capelin, digits =  3))
+nrow(akfin); nrow(ey)
+
+capelin.check <- left_join(akfin, ey, by = c("station_id" = "StationID")) %>%
+  rowwise() %>%
+  mutate(match = ifelse(Capelin_All == Capelin, TRUE, FALSE))
+
+filter(capelin.check, match == FALSE)
+## okay this is becasue there was an instance of 51 capelin sampled in like 2004 that made it into the diet database but not the catch database so it got added recently. 
+```
+
+
+Alright so we've checked the data and there are a couple of instances were the data is slightly shifted, but thats because we identified data that needed to be corrected since when the data were provided in fall 2024. This will slightly alter our VAST estimates (especially for pacific cod, but minorlly for everything else)
+
+# VAST runs
+Realistically for 2025, we're only trying to run VAST three times for three difference ESR indicators:
+1. Pelagic forage fish aggregate - previously EY
+2. Catch estimates for Herring & Capelin (together or seperate?) - for AA
+3. Catch estimates for walleye pollock (age-0) - for AA
+
+**One thing to note about VAST is that it saves the data to a strange directory that I can't access (easily) so Tristen helped provide a function that writes the model outputs to a specific directory. 
+```{r}
+library(VAST)
+Version = get_latest_version( package="VAST" )
+wd<-setwd("C:/Users/lia.domke/Desktop/Work/AFSC/R projects/EY_ESR_BASIS-Fish")
+
+ts <- nbs.ts %>% # clean up df read to be input
+  mutate(date = strptime(haul_date, "%m/%d/%Y"),
+         julian = yday(date)) %>%
+   dplyr::select(c(station_id, sample_year, julian, eq_latitude, eq_longitude, effort, effort_units, Forage)) %>%
+  dplyr::rename(Lat = eq_latitude,
+                Lon = eq_longitude)
+
+ts$doy <- scale(ts$julian, center = TRUE) # EY code says it scales to 0 to 1, but it doens't. More like -4 to 3
+
+head(ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
+# forage is in weight kg
+
+# pull in custom NBS user region
+user_region <- readRDS("NBS_user_region.rds")
+```
+
+# Custom directory fxn
+Use it before the fit model 
+```{r}
+Date = Sys.Date()
+RunFile = DateFile = paste0(getwd(),'/',Date,'/')
+dir.create(RunFile, recursive = TRUE) # creates folder with today's date to contain the session outputs
+
+
+fit_model_to_dir<- function(d, ...){
+  fit_model(CompileDir=d, RunDir=d, working_dir=d, ...) 
+}
+                 
+
+plot_to_dir <- function(pd, ...) {
+  plot(CompileDir = pd, RunDir = pd, working_dir = pd, ...
+  )
+}
+```
+
+# Forage complex
+## Settings Forage Complex
+The biggest concern I have here is related to the ObsModel and the FieldConfig
+I'm not sure which are the best to use here. The make_data details section is supposed to clarify 
+FieldConfig but when looking at it I'm not sure what the 1 stands for 0 looks like its Omega1 (what is this?)
+
+ObsModel isn't in the documentation for make_settings or make_data; there is ObsModel_ez but it is unclear if that is the same thing. 
+
+Changed settings to match those in Yasumiishi's retiree drive: NBS Forage Fish ARchive 2023
+```{r}
+settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
+                          n_x=500, #500 except maybe sockeye
+                          Region='User', #user defined, uses NBS region and input in fit_model
+                          purpose="index2", #uses gamma distribution for positive catch, uses bias correction
+                          bias.correct=TRUE,
+                          max_cells = 2000,
+                          ObsModel=c(2,3), 
+                          # unclear what the FieldConfig should or should not be. 
+                          FieldConfig=c(1,1,1,1),	#(01,E1,O2,E2) #N Pcod 0001
+                          # field config also is 1010 in the 2021 NBS forage so could be either, but has anisotropy as false so likely not what we want
+                          Options=c(SD_site_logdensity=TRUE, Calculate_Range = TRUE,
+                                    Calculate_effective_area = TRUE),
+                          fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
+                          treat_nonencounter_as_zero=TRUE,
+                          knot_method='grid', # extrapolation is done with grid cells within specificed strata
+                          use_anisotropy =TRUE) # boolean indicating whether to est two addition params rep geometric anisotrophy
+
+```
+
+
+## Fit model Forage complex
+```{r}
+species <- "Forage complex"
+pd <- paste0(getwd(), '/', Date, '/', species)
+
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = ts$Lat,
+                 Lon_i = ts$Lon,
+                 observations_LL = ts[,c('Lat','Lon')],
+                 t_i = ts$sample_year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(ts$Forage,'kg')), #Catch in weight at each station
+                 #"b_i"=(as_units(temp[,'No'],'count')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'J_Sockeye_Num'],'count')), #Catch in numbers at each station
+                 #"b_i"=(as_units(temp[,'Capelin'],'kg')), #Catch in numbers at each station
+                # "b_i"=(as_units(log(temp[,'A0_Pollock']+1),'kg')), #Catch in numbers at each station
+                #"b_i"=(as_units(log(temp[,'A0_Herring']+1),'kg')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'A0_Pcod'],'kg')), #Catch in numbers at each station
+                 #"a_i"=(as_units(temp[,'AreaSwept'],'km^3')), #km^2 based on haversine distance  times trawl width 50 m.
+                a_i = (as_units(ts$effort,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=ts$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+```
+
+## plot fit
+```{r}
+plot_to_dir(pd = pd,
+            fit)
+```
+
+```{r}
+## Remake map list locally for recreating plots
+mdl <- make_map_info(Region = settings$Region,
+                     spatial_list = fit$spatial_list,
+                     Extrapolation_List = fit$extrapolation_list)
+#Densities at each extrapolation grid location
+fit$Report$D_gct
+#Densities at each extrapolation grid location
+names(fit$Report)[grepl('_gc|_gct', x=names(fit$Report))]
+D_gt <- fit$Report$D_gct[,1,] # drop the category
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=c(2003:2019))
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=years)
+## tidy way of doing this, reshape2::melt() does
+## it cleanly but is deprecated
+#?pivot_longer.sf
+#?rownames_to_column
+#require(tibble)
+#library(tidyverse)
+#?pivot_longer
+D_gt <- D_gt %>% as.data.frame() %>%
+  tibble::rownames_to_column(var = "cell") %>%
+  #tibble::rownames_to_column(var = "cell") %>%
+  pivot_longer(-cell, names_to = "Year", values_to='D')
+D <- merge(D_gt, mdl$PlotDF, by.x='cell', by.y='x2i')
+D3<-lapply(((D)), as.numeric)
+D4<-data.frame(D3)
+head(D4)
+summary(exp(D4$D))
+summary((D4$D))
+
+#Subet D values greater than .1% of D to plot
+#D02 <- D4[which((D$Year == "2002")),names(D4) %in% c("Year","D","Lat","Lon")]
+D03 <- D4[which(D$Year == "2003"),names(D4) %in% c("Year","D","Lat","Lon")]
+D04 <- D4[which(D$Year == "2004"),names(D4) %in% c("Year","D","Lat","Lon")]
+D05 <- D4[which(D$Year == "2005"),names(D4) %in% c("Year","D","Lat","Lon")]
+D06 <- D4[which(D$Year == "2006"),names(D4) %in% c("Year","D","Lat","Lon")]
+D07 <- D4[which(D$Year == "2007"),names(D4) %in% c("Year","D","Lat","Lon")]
+D08 <- D4[which(D$Year == "2008"),names(D4) %in% c("Year","D","Lat","Lon")]
+D09 <- D4[which(D$Year == "2009"),names(D4) %in% c("Year","D","Lat","Lon")]
+D10 <- D4[which(D$Year == "2010"),names(D4) %in% c("Year","D","Lat","Lon")]
+D11 <- D4[which(D$Year == "2011"),names(D4) %in% c("Year","D","Lat","Lon")]
+D12 <- D4[which(D$Year == "2012"),names(D4) %in% c("Year","D","Lat","Lon")]
+D13 <- D4[which(D$Year == "2013"),names(D4) %in% c("Year","D","Lat","Lon")]
+D14 <- D4[which(D$Year == "2014"),names(D4) %in% c("Year","D","Lat","Lon")]
+D15 <- D4[which(D$Year == "2015"),names(D4) %in% c("Year","D","Lat","Lon")]
+D16 <- D4[which(D$Year == "2016"),names(D4) %in% c("Year","D","Lat","Lon")]
+D17 <- D4[which(D$Year == "2017"),names(D4) %in% c("Year","D","Lat","Lon")]
+D18 <- D4[which(D$Year == "2018"),names(D4) %in% c("Year","D","Lat","Lon")]
+D19 <- D4[which(D$Year == "2019"),names(D4) %in% c("Year","D","Lat","Lon")]
+D21 <- D4[which(D$Year == "2021"),names(D4) %in% c("Year","D","Lat","Lon")]
+D22 <- D4[which(D$Year == "2022"),names(D4) %in% c("Year","D","Lat","Lon")]
+D23 <- D4[which(D$Year == "2023"),names(D4) %in% c("Year","D","Lat","Lon")]
+D24 <- D4[which(D$Year == "2024"),names(D4) %in% c("Year","D","Lat","Lon")]
+
+#NEBS
+D5<-rbind(D03,D04,D05,D06,D07, D09,D10,D11,D12,D13,D14,D15,D16,D17,D18,D19,D21,D22,D23,D24) 
+
+
+D6<-lapply(D5, as.numeric)
+D7<-data.frame(D6)
+summary(D7)
+
+#write.csv(D7, paste0(pd,"/", Date,"_Density_ForageComplex_NBS_VAST_TotalArea.csv"))
+
+mean.fish_D_VAST<- D7 %>% group_by(Year) %>% summarize(mean=mean(D))
+SD.fish_D_VAST<-D7 %>% group_by(Year) %>% summarize(SD=(sd(D)))
+
+SD.fish_D_VAST
+mean.fish_D_VAST
+
+
+out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_ForageComplex_NBS_D.csv"), row.names = TRUE)
+```
+
+
+# Pollock age 0
+## Settings Pollock age 0
+```{r}
+head(nbs.ts)
+pollock.ts <- nbs.ts %>% # clean up df read to be input
+  mutate(date = strptime(haul_date, "%m/%d/%Y"),
+         julian = yday(date)) %>%
+   dplyr::select(c(station_id, sample_year, julian, eq_latitude, eq_longitude, effort, effort_units, Pollock_A0)) %>%
+  dplyr::rename(Lat = eq_latitude,
+                Lon = eq_longitude)
+
+pollock.ts$doy <- scale(pollock.ts$julian, center = TRUE) # EY code says it scales to 0 to 1, but it doens't. More like -4 to 3
+
+head(pollock.ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
+# forage is in weight kg
+```
+
+Used settings from the NBS Pollock 2022 ABL retiree googld drive
+```{r}
+settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
+                          n_x=500, #500 for all except sockeye (unsure if this is for weight or number)
+                          Region='User', # user defined, uses NBS region and will be input in fit_model
+                          purpose="index2", # uses gamma distribution for positive catch, uses bias correction
+                          bias.correct=TRUE,
+                          max_cells = 2000,
+                          ObsModel=c(2,3), #(2,4) catch 
+                          #ObsModel=c(2,3), #sockeye 
+                          # unclear what the FieldConfig should or should not be. This 1,1,0,1 was initially set up for lampray in the northern bering sea. 
+                          FieldConfig=c(1,1,1,1),	#(01,E1,O2,E2) #N Pcod 0001
+                          Options=c('SD_site_logdensity'=TRUE,'Calculate_Range'=TRUE,'Calculate_effective_area'=TRUE),
+                          fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
+                          treat_nonencounter_as_zero=TRUE,
+                          knot_method='grid', # extrapolation is done with grid cells within specificed strata
+                          use_anisotropy =TRUE) # boolean indicating whether to est two addition params rep geometric anisotrophy
+
+```
+
+## Pollock fit model
+```{r}
+species <- "Pollock_age0"
+pd <- paste0(getwd(), '/', Date, '/', species)
+
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = pollock.ts$Lat,
+                 Lon_i = pollock.ts$Lon,
+                 observations_LL = pollock.ts[,c('Lat','Lon')],
+                 t_i = pollock.ts$sample_year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(pollock.ts$Pollock_A0,'kg')), #Catch in weight at each station
+                 #"b_i"=(as_units(temp[,'No'],'count')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'J_Sockeye_Num'],'count')), #Catch in numbers at each station
+                 #"b_i"=(as_units(temp[,'Capelin'],'kg')), #Catch in numbers at each station
+                # "b_i"=(as_units(log(temp[,'A0_Pollock']+1),'kg')), #Catch in numbers at each station
+                #"b_i"=(as_units(log(temp[,'A0_Herring']+1),'kg')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'A0_Pcod'],'kg')), #Catch in numbers at each station
+                 #"a_i"=(as_units(temp[,'AreaSwept'],'km^3')), #km^2 based on haversine distance  times trawl width 50 m.
+                a_i = (as_units(pollock.ts$effort,'km^2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=pollock.ts$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+```
+
+Take pollock outputs
+```{r}
+
+plot_to_dir(pd = pd,
+            fit)
+
+```
+
+```{r}
+## Remake map list locally for recreating plots
+mdl <- make_map_info(Region = settings$Region,
+                     spatial_list = fit$spatial_list,
+                     Extrapolation_List = fit$extrapolation_list)
+#Densities at each extrapolation grid location
+fit$Report$D_gct
+#Densities at each extrapolation grid location
+names(fit$Report)[grepl('_gc|_gct', x=names(fit$Report))]
+D_gt <- fit$Report$D_gct[,1,] # drop the category
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=c(2003:2019))
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=years)
+## tidy way of doing this, reshape2::melt() does
+## it cleanly but is deprecated
+#?pivot_longer.sf
+#?rownames_to_column
+#require(tibble)
+#library(tidyverse)
+#?pivot_longer
+D_gt <- D_gt %>% as.data.frame() %>%
+  tibble::rownames_to_column(var = "cell") %>%
+  #tibble::rownames_to_column(var = "cell") %>%
+  pivot_longer(-cell, names_to = "Year", values_to='D')
+D <- merge(D_gt, mdl$PlotDF, by.x='cell', by.y='x2i')
+D3<-lapply(((D)), as.numeric)
+D4<-data.frame(D3)
+head(D4)
+summary(exp(D4$D))
+summary((D4$D))
+
+#Subet D values greater than .1% of D to plot
+#D02 <- D4[which((D$Year == "2002")),names(D4) %in% c("Year","D","Lat","Lon")]
+D03 <- D4[which(D$Year == "2003"),names(D4) %in% c("Year","D","Lat","Lon")]
+D04 <- D4[which(D$Year == "2004"),names(D4) %in% c("Year","D","Lat","Lon")]
+D05 <- D4[which(D$Year == "2005"),names(D4) %in% c("Year","D","Lat","Lon")]
+D06 <- D4[which(D$Year == "2006"),names(D4) %in% c("Year","D","Lat","Lon")]
+D07 <- D4[which(D$Year == "2007"),names(D4) %in% c("Year","D","Lat","Lon")]
+D08 <- D4[which(D$Year == "2008"),names(D4) %in% c("Year","D","Lat","Lon")]
+D09 <- D4[which(D$Year == "2009"),names(D4) %in% c("Year","D","Lat","Lon")]
+D10 <- D4[which(D$Year == "2010"),names(D4) %in% c("Year","D","Lat","Lon")]
+D11 <- D4[which(D$Year == "2011"),names(D4) %in% c("Year","D","Lat","Lon")]
+D12 <- D4[which(D$Year == "2012"),names(D4) %in% c("Year","D","Lat","Lon")]
+D13 <- D4[which(D$Year == "2013"),names(D4) %in% c("Year","D","Lat","Lon")]
+D14 <- D4[which(D$Year == "2014"),names(D4) %in% c("Year","D","Lat","Lon")]
+D15 <- D4[which(D$Year == "2015"),names(D4) %in% c("Year","D","Lat","Lon")]
+D16 <- D4[which(D$Year == "2016"),names(D4) %in% c("Year","D","Lat","Lon")]
+D17 <- D4[which(D$Year == "2017"),names(D4) %in% c("Year","D","Lat","Lon")]
+D18 <- D4[which(D$Year == "2018"),names(D4) %in% c("Year","D","Lat","Lon")]
+D19 <- D4[which(D$Year == "2019"),names(D4) %in% c("Year","D","Lat","Lon")]
+D21 <- D4[which(D$Year == "2021"),names(D4) %in% c("Year","D","Lat","Lon")]
+D22 <- D4[which(D$Year == "2022"),names(D4) %in% c("Year","D","Lat","Lon")]
+D23 <- D4[which(D$Year == "2023"),names(D4) %in% c("Year","D","Lat","Lon")]
+D24 <- D4[which(D$Year == "2024"),names(D4) %in% c("Year","D","Lat","Lon")]
+
+#NEBS
+D5<-rbind(D03,D04,D05,D06,D07, D09,D10,D11,D12,D13,D14,D15,D16,D17,D18,D19,D21,D22,D23,D24) 
+
+
+D6<-lapply(D5, as.numeric)
+D7<-data.frame(D6)
+summary(D7)
+
+#write.csv(D7, paste0(pd,"/", Date,"_Density_Pollock0_NBS_VAST_TotalArea.csv"))
+
+mean.fish_D_VAST<- D7 %>% group_by(Year) %>% summarize(mean=mean(D))
+SD.fish_D_VAST<-D7 %>% group_by(Year) %>% summarize(SD=(sd(D)))
+
+SD.fish_D_VAST
+mean.fish_D_VAST
+
+
+out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Pollock0_NBS_D.csv"), row.names = TRUE)
+```
+
+
+# Herring (all ages) settings
+```{r}
+names(nbs.ts)
+
+head(nbs.ts)
+herring.ts <- nbs.ts %>% # clean up df read to be input
+  mutate(date = strptime(haul_date, "%m/%d/%Y"),
+         julian = yday(date)) %>%
+   dplyr::select(c(station_id, sample_year, julian, eq_latitude, eq_longitude, effort, effort_units, `Pacific Herring_All`)) %>%
+  dplyr::rename(Lat = eq_latitude,
+                Lon = eq_longitude)
+
+herring.ts$doy <- scale(herring.ts$julian, center = TRUE) # EY code says it scales to 0 to 1, but it doens't. More like -4 to 3
+
+head(herring.ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
+# forage is in weight kg
+```
+
+## Herring settings
+```{r}
+settings = make_settings(Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
+                          n_x=500, #500 for all except sockeye (unsure if this is for weight or number)
+                          Region='User', # user defined, uses NBS region and will be input in fit_model
+                          purpose="index2", # uses gamma distribution for positive catch, uses bias correction
+                          bias.correct=TRUE,
+                          max_cells = 2000,
+                          ObsModel=c(2,3), # based off of 2022 herring, # 2023 is 2,3
+                          FieldConfig=c(1,0,1,1),	# herring 2022 & 2023 NBS
+                          Options=c('SD_site_logdensity'=TRUE,'Calculate_Range'=TRUE,'Calculate_effective_area'=TRUE),
+                          fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
+                          treat_nonencounter_as_zero=TRUE,
+                          knot_method='grid', # extrapolation is done with grid cells within specificed strata
+                          use_anisotropy =TRUE) # boolean indicating whether to est two addition params rep geometric anisotrophy
+
+```
+
+## Fit model
+```{r}
+species <- "Pacific_Herring"
+pd <- paste0(getwd(), '/', Date, '/', species)
+
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = herring.ts$Lat,
+                 Lon_i = herring.ts$Lon,
+                 observations_LL = herring.ts[,c('Lat','Lon')],
+                 t_i = herring.ts$sample_year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(herring.ts$`Pacific Herring_All`,'kg')), #Catch in weight at each station
+                 #"b_i"=(as_units(temp[,'No'],'count')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'J_Sockeye_Num'],'count')), #Catch in numbers at each station
+                 #"b_i"=(as_units(temp[,'Capelin'],'kg')), #Catch in numbers at each station
+                # "b_i"=(as_units(log(temp[,'A0_Pollock']+1),'kg')), #Catch in numbers at each station
+                #"b_i"=(as_units(log(temp[,'A0_Herring']+1),'kg')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'A0_Pcod'],'kg')), #Catch in numbers at each station
+                 #"a_i"=(as_units(temp[,'AreaSwept'],'km^3')), #km^2 based on haversine distance  times trawl width 50 m.
+                a_i = (as_units(herring.ts$effort,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=herring.ts$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+```
+
+```{r}
+
+plot_to_dir(pd = pd,
+            fit)
+```
+
+Following EY's code to write out similar datafiles to cmpare
+
+Note that the "2024TimeSeries2_D.csv" reports SE not SD so we likely need to calculate error to accurately compare. 
+From the model output right now (that I ran) some of these SD are super large
+```{r}
+## Remake map list locally for recreating plots
+mdl <- make_map_info(Region = settings$Region,
+                     spatial_list = fit$spatial_list,
+                     Extrapolation_List = fit$extrapolation_list)
+#Densities at each extrapolation grid location
+fit$Report$D_gct
+#Densities at each extrapolation grid location
+names(fit$Report)[grepl('_gc|_gct', x=names(fit$Report))]
+D_gt <- fit$Report$D_gct[,1,] # drop the category
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=c(2003:2019))
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=years)
+## tidy way of doing this, reshape2::melt() does
+## it cleanly but is deprecated
+#?pivot_longer.sf
+#?rownames_to_column
+#require(tibble)
+#library(tidyverse)
+#?pivot_longer
+D_gt <- D_gt %>% as.data.frame() %>%
+  tibble::rownames_to_column(var = "cell") %>%
+  #tibble::rownames_to_column(var = "cell") %>%
+  pivot_longer(-cell, names_to = "Year", values_to='D')
+D <- merge(D_gt, mdl$PlotDF, by.x='cell', by.y='x2i')
+D3<-lapply(((D)), as.numeric)
+D4<-data.frame(D3)
+head(D4)
+summary(exp(D4$D))
+summary((D4$D))
+
+#Subet D values greater than .1% of D to plot
+#D02 <- D4[which((D$Year == "2002")),names(D4) %in% c("Year","D","Lat","Lon")]
+D03 <- D4[which(D$Year == "2003"),names(D4) %in% c("Year","D","Lat","Lon")]
+D04 <- D4[which(D$Year == "2004"),names(D4) %in% c("Year","D","Lat","Lon")]
+D05 <- D4[which(D$Year == "2005"),names(D4) %in% c("Year","D","Lat","Lon")]
+D06 <- D4[which(D$Year == "2006"),names(D4) %in% c("Year","D","Lat","Lon")]
+D07 <- D4[which(D$Year == "2007"),names(D4) %in% c("Year","D","Lat","Lon")]
+D08 <- D4[which(D$Year == "2008"),names(D4) %in% c("Year","D","Lat","Lon")]
+D09 <- D4[which(D$Year == "2009"),names(D4) %in% c("Year","D","Lat","Lon")]
+D10 <- D4[which(D$Year == "2010"),names(D4) %in% c("Year","D","Lat","Lon")]
+D11 <- D4[which(D$Year == "2011"),names(D4) %in% c("Year","D","Lat","Lon")]
+D12 <- D4[which(D$Year == "2012"),names(D4) %in% c("Year","D","Lat","Lon")]
+D13 <- D4[which(D$Year == "2013"),names(D4) %in% c("Year","D","Lat","Lon")]
+D14 <- D4[which(D$Year == "2014"),names(D4) %in% c("Year","D","Lat","Lon")]
+D15 <- D4[which(D$Year == "2015"),names(D4) %in% c("Year","D","Lat","Lon")]
+D16 <- D4[which(D$Year == "2016"),names(D4) %in% c("Year","D","Lat","Lon")]
+D17 <- D4[which(D$Year == "2017"),names(D4) %in% c("Year","D","Lat","Lon")]
+D18 <- D4[which(D$Year == "2018"),names(D4) %in% c("Year","D","Lat","Lon")]
+D19 <- D4[which(D$Year == "2019"),names(D4) %in% c("Year","D","Lat","Lon")]
+D21 <- D4[which(D$Year == "2021"),names(D4) %in% c("Year","D","Lat","Lon")]
+D22 <- D4[which(D$Year == "2022"),names(D4) %in% c("Year","D","Lat","Lon")]
+D23 <- D4[which(D$Year == "2023"),names(D4) %in% c("Year","D","Lat","Lon")]
+D24 <- D4[which(D$Year == "2024"),names(D4) %in% c("Year","D","Lat","Lon")]
+
+#NEBS
+D5<-rbind(D03,D04,D05,D06,D07, D09,D10,D11,D12,D13,D14,D15,D16,D17,D18,D19,D21,D22,D23,D24) 
+
+
+D6<-lapply(D5, as.numeric)
+D7<-data.frame(D6)
+summary(D7)
+
+#write.csv(D7, paste0(pd,"/", Date,"_Density_Herring_NBS_VAST_TotalArea.csv"))
+
+mean.fish_D_VAST<- D7 %>% group_by(Year) %>% summarize(mean=mean(D))
+SD.fish_D_VAST<-D7 %>% group_by(Year) %>% summarize(SD=(sd(D)))
+
+SD.fish_D_VAST
+mean.fish_D_VAST
+
+
+out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Herring_NBS_D.csv"), row.names = TRUE)
+
+```
+
+# Capelin
+```{r}
+names(nbs.ts)
+
+head(nbs.ts)
+capelin.ts <- nbs.ts %>% # clean up df read to be input
+  mutate(date = strptime(haul_date, "%m/%d/%Y"),
+         julian = yday(date)) %>%
+   dplyr::select(c(station_id, sample_year, julian, eq_latitude, eq_longitude, effort, effort_units, Capelin_All)) %>%
+  dplyr::rename(Lat = eq_latitude,
+                Lon = eq_longitude)
+
+capelin.ts$doy <- scale(capelin.ts$julian, center = TRUE) # EY code says it scales to 0 to 1, but it doens't. More like -4 to 3
+
+head(capelin.ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
+# forage is in weight kg
+```
+
+## Settings
+```{r}
+settings = make_settings(Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
+                          n_x=500, #500 for all except sockeye (unsure if this is for weight or number)
+                          Region='User', # user defined, uses NBS region and will be input in fit_model
+                          purpose="index2", # uses gamma distribution for positive catch, uses bias correction
+                          bias.correct=TRUE,
+                          max_cells = 2000,
+                          ObsModel=c(2,3), # based off of 2023 capelin
+                          FieldConfig=c(1,1,1,1),	# capelin 2023
+                          Options=c('SD_site_logdensity'=TRUE,'Calculate_Range'=TRUE,'Calculate_effective_area'=TRUE),
+                          fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
+                          treat_nonencounter_as_zero=TRUE,
+                          knot_method='grid', # extrapolation is done with grid cells within specificed strata
+                          use_anisotropy =TRUE) # boolean indicating whether to est two addition params rep geometric anisotrophy
+```
+
+## Fit model
+```{r}
+species <- "Capelin"
+pd <- paste0(getwd(), '/', Date, '/', species)
+
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = capelin.ts$Lat,
+                 Lon_i = capelin.ts$Lon,
+                 observations_LL = capelin.ts[,c('Lat','Lon')],
+                 t_i = capelin.ts$sample_year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(capelin.ts$Capelin_All,'kg')), #Catch in weight at each station
+                 #"b_i"=(as_units(temp[,'No'],'count')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'J_Sockeye_Num'],'count')), #Catch in numbers at each station
+                 #"b_i"=(as_units(temp[,'Capelin'],'kg')), #Catch in numbers at each station
+                # "b_i"=(as_units(log(temp[,'A0_Pollock']+1),'kg')), #Catch in numbers at each station
+                #"b_i"=(as_units(log(temp[,'A0_Herring']+1),'kg')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'A0_Pcod'],'kg')), #Catch in numbers at each station
+                 #"a_i"=(as_units(temp[,'AreaSwept'],'km^3')), #km^2 based on haversine distance  times trawl width 50 m.
+                a_i = (as_units(capelin.ts$effort,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=capelin.ts$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+
+```
+
+```{r}
+plot_to_dir(pd = pd,
+            fit)
+```
+
+
+### testing exporting other information
+This is the code from BASIS_Fish_V2.R script
+For Capelin this matches up the "Surface_Capelin_NBS_D.csv" file with whats in the "2024TimeSeries2_D.csv" for "Capelina" (must be some kinda adjusted Capelin). 
+
+For now our Capelin fit that we run above doesn't converge so the out.dat.2 doesn't match what we see in the timeseries so we don't have the settings set up quite right yet for the Capelin model.
+```{r}
+## Remake map list locally for recreating plots
+mdl <- make_map_info(Region = settings$Region,
+                     spatial_list = fit$spatial_list,
+                     Extrapolation_List = fit$extrapolation_list)
+#Densities at each extrapolation grid location
+fit$Report$D_gct
+#Densities at each extrapolation grid location
+names(fit$Report)[grepl('_gc|_gct', x=names(fit$Report))]
+D_gt <- fit$Report$D_gct[,1,] # drop the category
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=c(2003:2019))
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=years)
+
+D_gt <- D_gt %>% as.data.frame() %>%
+  tibble::rownames_to_column(var = "cell") %>%
+  #tibble::rownames_to_column(var = "cell") %>%
+  pivot_longer(-cell, names_to = "Year", values_to='D')
+D <- merge(D_gt, mdl$PlotDF, by.x='cell', by.y='x2i')
+D3<-lapply(((D)), as.numeric)
+D4<-data.frame(D3)
+head(D4)
+summary(exp(D4$D))
+summary((D4$D))
+
+#Subet D values greater than .1% of D to plot
+#D02 <- D4[which((D$Year == "2002")),names(D4) %in% c("Year","D","Lat","Lon")]
+D03 <- D4[which(D$Year == "2003"),names(D4) %in% c("Year","D","Lat","Lon")]
+D04 <- D4[which(D$Year == "2004"),names(D4) %in% c("Year","D","Lat","Lon")]
+D05 <- D4[which(D$Year == "2005"),names(D4) %in% c("Year","D","Lat","Lon")]
+D06 <- D4[which(D$Year == "2006"),names(D4) %in% c("Year","D","Lat","Lon")]
+D07 <- D4[which(D$Year == "2007"),names(D4) %in% c("Year","D","Lat","Lon")]
+D08 <- D4[which(D$Year == "2008"),names(D4) %in% c("Year","D","Lat","Lon")]
+D09 <- D4[which(D$Year == "2009"),names(D4) %in% c("Year","D","Lat","Lon")]
+D10 <- D4[which(D$Year == "2010"),names(D4) %in% c("Year","D","Lat","Lon")]
+D11 <- D4[which(D$Year == "2011"),names(D4) %in% c("Year","D","Lat","Lon")]
+D12 <- D4[which(D$Year == "2012"),names(D4) %in% c("Year","D","Lat","Lon")]
+D13 <- D4[which(D$Year == "2013"),names(D4) %in% c("Year","D","Lat","Lon")]
+D14 <- D4[which(D$Year == "2014"),names(D4) %in% c("Year","D","Lat","Lon")]
+D15 <- D4[which(D$Year == "2015"),names(D4) %in% c("Year","D","Lat","Lon")]
+D16 <- D4[which(D$Year == "2016"),names(D4) %in% c("Year","D","Lat","Lon")]
+D17 <- D4[which(D$Year == "2017"),names(D4) %in% c("Year","D","Lat","Lon")]
+D18 <- D4[which(D$Year == "2018"),names(D4) %in% c("Year","D","Lat","Lon")]
+D19 <- D4[which(D$Year == "2019"),names(D4) %in% c("Year","D","Lat","Lon")]
+D21 <- D4[which(D$Year == "2021"),names(D4) %in% c("Year","D","Lat","Lon")]
+D22 <- D4[which(D$Year == "2022"),names(D4) %in% c("Year","D","Lat","Lon")]
+D23 <- D4[which(D$Year == "2023"),names(D4) %in% c("Year","D","Lat","Lon")]
+D24 <- D4[which(D$Year == "2024"),names(D4) %in% c("Year","D","Lat","Lon")]
+
+#NEBS
+D5<-rbind(D03,D04,D05,D06,D07, D09,D10,D11,D12,D13,D14,D15,D16,D17,D18,D19,D21,D22,D23,D24) 
+
+
+D6<-lapply(D5, as.numeric)
+D7<-data.frame(D6)
+summary(D7)
+
+#write.csv(D7, paste0(pd,"/", Date,"_Density_Capelin_NBS_VAST_TotalArea.csv"))
+
+mean.fish_D_VAST<- D7 %>% group_by(Year) %>% summarize(mean=mean(D))
+SD.fish_D_VAST<-D7 %>% group_by(Year) %>% summarize(SD=(sd(D)))
+
+SD.fish_D_VAST
+mean.fish_D_VAST
+
+
+out.dat.2<-data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
+
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Capelin_NBS_D.csv"), row.names = TRUE)
+
+```
+
+# SEBS VAST 
+Because both the northern and southern data are typically included in the plots for the ESR 
+(even in off years for the SEBS survey). We want to go through and regenerate those data/figures as well. 
+
+Start with the catch data we already pulled above
+```{r}
+head(all.tax)
+# If all.tax not here, re run get_ema_taxonomy
+#all.tax <- get_ema_taxonomy()
+
+# Right now we're not including sand lance unident
+# QUESTIONS should we include the sand lance unident in this? tsn: 171671
+tsn <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672)
+this.year <- 2024
+# so all data 2002 and before either had less than great data (1996 - 2001); 2002 used a smaller trawl so 
+# people don't tend to use that data. 
+
+# check to make sure those are the species we want
+subset(all.tax, species_tsn %in% c(tsn))
+
+# best to not continuously re run this line of code cause it throws strange errors
+# instead you should remove the previous "catch" data in the global environment and re run if you want to
+
+head(catch)
+# if catch isn't in the global environment then you can re-run the code below. 
+# catch <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
+#                          tsn = tsn, trawl_method = "S", catch0 = TRUE) 
+
+# run it once and then adjust output
+
+# For the SEBS from the Ellen_ESER_9_25_24_v4 metadata:
+# all salmon should just be juveniles
+# For saffron code, herring, capelin, sandlance - group all LHS stages 
+# if you include squid - its all squid species in database
+# if you include jellyfish - its Aequorea sp, aurelia sp chrysora, cyanea, staurophora, and phacellephora
+# include only region where <= 59.9, tow type = S and year >=2003
+sebs.ts <- catch %>%
+  dplyr::select(-c(akfin_load_date.x, akfin_load_date.y, oceanographic_domain, bsierp_region,
+                   gear_in_time, gear_in_latitude, gear_in_longitude, gear_out_time, gear_out_latitude,
+                   gear_out_longitude, race_code, nodc_code)) %>%
+  # filter the lat/lon
+  filter(eq_latitude <= 59.9) %>%
+  unite(combo, c(species_tsn, lhs_code), remove = F) %>%
+  filter(lhs_code != "IM") %>% # remove all non-juvenile salmon species
+  filter(!(combo %in% c("934083_A1+", "934083_A2+", "934083_A1","934083_U", "934083_A", # remove all non a0 pollock
+                        "164711_U", # this is individuals with unknown lhs for pacific cod (keep only a0)
+                        "161977_U"))) %>% # this is an unknown lhs for coho salmon
+  unite(name_lhs, c(common_name, lhs_code), remove = F) %>%
+  #subset(cruise_id %in% c(cruise_ids)) %>%
+  mutate(total_catch_weight_kg = total_catch_weight/1000,
+         cpue_kgkm2 = total_catch_weight_kg/effort,
+        haul_date = format(eq_time, "%m/%d/%Y"),
+        cpue_weight_kg = cpue_weight/1000) %>%
+  pivot_wider(., id_cols = c(station_id, sample_year, cruise_id, haul_date, eq_time, eq_latitude,
+                             eq_longitude, effort, effort_units), 
+              names_from = "name_lhs", values_from = "total_catch_weight_kg") %>%
+  arrange(station_id) %>% # now lets add up the values
+  rowwise() %>%
+  mutate(`Saffron Cod_All` = sum(`Saffron Cod_U`, `Saffron Cod_A1+`, `Saffron Cod_A0`),
+         `Pacific Herring_All` = sum(`Pacific Herring_U`, `Pacific Herring_A0`, `Pacific Herring_A1+`),
+         `Capelin_All` = sum(`Capelin_U`, `Capelin_A0`, `Capelin_A1+`),
+         `Arctic Sand Lance_All`= sum(`Arctic Sand Lance_A1+`, `Arctic Sand Lance_A0`),
+         `Rainbow Smelt_All` = sum(`Rainbow Smelt_A1+`, `Rainbow Smelt_A0`, `Rainbow Smelt_U`),
+         Forage = sum(`Saffron Cod_All`, `Pacific Herring_All`, `Capelin_All`, `Rainbow Smelt_All`,
+                      `Chum Salmon_J`, `Coho Salmon_J`, `Chinook Salmon_J`, `Pink Salmon_J`, `Sockeye Salmon_J`,
+                      `Pollock_A0`, `Pacific Cod_A0`))
+
+# the output is kg of catch (not effort corrected) for each species
+# spot check 
+head(sebs.ts)
+
+# number of stations per year
+sebs.sample.size <- sebs.ts %>%
+  group_by(sample_year) %>%
+  dplyr::summarize(n()) # this is slight diff in 2014 for n because akfin removed the U and A tows 
+# see below. 
+#write.csv(sebs.sample.size, paste0("SEBS_updated_sample_size_", this.year, ".csv"))
+```
+
+## compare w/ sebs ey
+```{r}
+ey_sebs <- read.csv("Ellen_ESR_9_25_24_V4.csv")
+
+length(unique(ey_sebs$StationID)) # 981 stations
+length(unique(sebs.ts$station_id)) # 982
+
+
+
+anti_join(ey_sebs, sebs.ts, by = c("StationID" = "station_id"))
+# no stations in ey pull that aren't in akfin
+anti_join(sebs.ts, ey_sebs, by = c("station_id" = "StationID"))
+# one station in the akfin pull that isn't in teh EY pull \
+
+# this seems like maybe this station got dropped because theres no effort value in event params 
+# but it looks like we could calculate that for now we'll leav eit 
+
+names(sebs.ts)
+### COMPARE CATCH NUMBERS/WEIGHT
+ey_sebs2 <- dplyr::select(ey_sebs, -c("Squid","Jellyfish", "J_Sockeye_Num", "Salmon", "Forage")) %>%
+  rowwise() %>%
+  mutate(Forage_2 = sum(Capelin, J_Chinook, J_Chum, J_Coho, A0_Pcod, Herring, J_Pink,
+                        A0_Pollock, Rainbow_Smelt, Saffron_Cod, J_Sockeye_Wt))
+
+ey_sums_sebs <- colSums(ey_sebs2[-c(1:10)])
+
+names(ey_sums_sebs) <- c("Capelin_All", "Chinook Salmon_J", "Chum Salmon_J", "Coho Salmon_J",
+                                    "Pacific Cod_A0", "Pacific Herring_All", "Pink Salmon_J",
+                                    "Pollock_A0", "Rainbow Smelt_All", "Saffron Cod_All",
+                                    "Sockeye Salmon_J","Forage")
+ey.df2 <- as.data.frame(ey_sums_sebs) %>%
+  rownames_to_column("name")
+sebs.ts2 <- as.data.frame(colSums(sebs.ts[-c(1:9)])) %>%
+  rownames_to_column("name")
+colnames(sebs.ts2) <- c("name", "sums")
+sebs.ts2 %>%
+  filter(!(name %in% c("Pacific Herring_U", "Arctic Sand Lance_U", "Capelin_U", "Rainbow Smelt_U", "Saffron Code_A1+",
+                       "Saffron Cod_A0", "Pacific Herring_A1+", "Pacific Herring_A0", "Capelin_A0", "Capelin_A1+"))) %>%
+  left_join(ey.df2) %>%
+  mutate(comp = ifelse(round(sums, digits = 4) == round(ey_sums_sebs,digit = 4), TRUE, "Diff"))
+```
+
+Okay so the juvenile sockeye, pollock a0, pacific cod a0, and forage complex are different
+```{r}
+nrow(ey_sebs2)
+nrow(sebs.ts)
+
+sebs.by.yr <- sebs.ts %>%
+  dplyr::select(sample_year,station_id, `Sockeye Salmon_J`, `Pollock_A0`, `Pacific Cod_A0`,Forage) %>%
+  pivot_longer(cols = c(`Sockeye Salmon_J`, `Pollock_A0`, `Pacific Cod_A0`,
+                                  Forage), names_to = "species", values_to = "biomass_kg") %>%
+  group_by(sample_year,station_id, species) %>%
+  mutate(sum_kg = sum(biomass_kg)) %>%
+  dplyr::select(-biomass_kg) %>%
+  distinct()
+
+names(ey_sebs2) <- c("StationID", "EventCode", "Year", "Lat", "Lon", "HaulDate", "Oceanographic_Strata",
+                     "Tow_Type", "AreaSwept", "Effort_Units",
+                     "Capelin_All", "Chinook Salmon_J", "Chum Salmon_J", "Coho Salmon_J",
+                                    "Pacific Cod_A0", "Pacific Herring_All", "Pink Salmon_J",
+                                    "Pollock_A0", "Rainbow Smelt_All", "Saffron Cod_All",
+                                    "Sockeye Salmon_J","Forage")
+
+ey_by_yr <- ey_sebs2 %>%
+  dplyr::select(Year, StationID, `Sockeye Salmon_J`, `Pollock_A0`, `Pacific Cod_A0`,Forage) %>%
+  pivot_longer(cols = c(`Sockeye Salmon_J`, `Pollock_A0`, `Pacific Cod_A0`,
+                                  Forage), names_to = "species", values_to = "biomass_kg") %>%
+  group_by(Year, StationID, species) %>%
+  mutate(sum_kg = sum(biomass_kg)) %>%
+  dplyr::select(-biomass_kg) %>%
+  distinct()
+
+
+sebs.by.yr %>%
+  left_join(ey_by_yr, by = c("sample_year" = "Year", 
+                             "station_id" = "StationID",
+                             "species")) %>%
+  mutate(check = ifelse(sum_kg.x == sum_kg.y, "TRUE", "FALSE")) %>%
+  filter(check == FALSE) %>%
+  arrange(species) %>%
+  mutate(diff = round(sum_kg.x - sum_kg.y, digits = 4)) %>%
+  filter(diff > 0)
+# the sockeye in 2003 at 20030101070 previously had the subsample weight instead of the total weight 
+# this is correct in the akfin pull no correction needed
+
+ey2 <- ey_by_yr %>%
+  group_by(Year, species) %>%
+  dplyr::summarize(sum_kg2 = sum(sum_kg))
+
+sebs.by.yr %>%
+  group_by(sample_year, species) %>%
+  dplyr::summarize(sum_kg2 = sum(sum_kg)) %>%
+  left_join(ey2, by = c("sample_year" = "Year", "species")) %>%
+  mutate(check = ifelse(sum_kg2.x == sum_kg2.y, "TRUE", "FALSE")) %>%
+  filter(check == FALSE)
+
+
+test <- sebs.by.yr %>%
+  full_join(ey_by_yr, by = c("sample_year" = "Year", 
+                             "station_id" = "StationID",
+                             "species")) %>%
+  filter(sample_year == 2014,
+         species %in% c("Pollock_A0", "Sockeye Salmon_J")) %>%
+  mutate(diff = sum_kg.x - sum_kg.y)
+# so looking at the full join rather than left you'll notice that in 2014 there's no station 22 
+# which is why we're seeing a different in 2014 for age 0 pollock and sockeye salmon - those were omitted
+# in the Ellen ESR data pull (but shouldn't have been)
+# ALSO DUH IF YOU HAD LOOKED AT THE ANTIJOIN ABOVE YOU WOULD KNOW THIS
+
+# the rest of the errors look like issues with rounding so we're good to go ahead and use the sebs from akfin ts
+```
+
+# SEBS Forage
+```{r}
+head(sebs.ts)
+
+sforage <- sebs.ts %>% # clean up df read to be input
+  mutate(date = strptime(haul_date, "%m/%d/%Y"),
+         julian = yday(date)) %>%
+  dplyr::select(c(station_id, sample_year, julian, eq_latitude, eq_longitude, effort, effort_units, Forage)) %>%
+  dplyr::rename(Lat = eq_latitude,
+                Lon = eq_longitude)
+
+sforage$doy <- scale(sforage$julian, center = TRUE) # EY code says it scales to 0 to 1, but it doens't. More like -4 to 3
+
+head(sforage) # only neccessary data for the forage fishes (see ESR for included species or above in script)
+# forage is in weight kg
+
+# pull in custom NBS user region
+sebs_user_region <- readRDS("user_region.rds")
+```
+
+## Settings
+```{r}
+settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
+                          n_x=500, #500 except maybe sockeye
+                          Region='User', #user defined, uses NBS region and input in fit_model
+                          purpose="index2", #uses gamma distribution for positive catch, uses bias correction
+                          bias.correct=TRUE,
+                          max_cells = 2000,
+                          ObsModel=c(2,3), 
+                          # unclear what the FieldConfig should or should not be. 
+                          FieldConfig=c(1,1,1,1),	# I think this is 2023 forage
+                          Options=c(SD_site_logdensity=TRUE, Calculate_Range = TRUE,
+                                    Calculate_effective_area = TRUE),
+                          fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
+                          treat_nonencounter_as_zero=TRUE,
+                          knot_method='grid', # extrapolation is done with grid cells within specificed strata
+                          use_anisotropy =TRUE) # boolean indicating whether to est two addition params rep geometric anisotrophy
+
+```
+
+## Fit model
+```{r}
+region <- "SEBS"
+species <- "Forage complex"
+pd <- paste0(getwd(), '/', Date, '/', region, '/', species)
+
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = sforage$Lat,
+                 Lon_i = sforage$Lon,
+                 observations_LL = sforage[,c('Lat','Lon')],
+                 t_i = sforage$sample_year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(sforage$Forage,'kg')), #Catch in weight at each station
+                 #"b_i"=(as_units(temp[,'No'],'count')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'J_Sockeye_Num'],'count')), #Catch in numbers at each station
+                 #"b_i"=(as_units(temp[,'Capelin'],'kg')), #Catch in numbers at each station
+                # "b_i"=(as_units(log(temp[,'A0_Pollock']+1),'kg')), #Catch in numbers at each station
+                #"b_i"=(as_units(log(temp[,'A0_Herring']+1),'kg')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'A0_Pcod'],'kg')), #Catch in numbers at each station
+                 #"a_i"=(as_units(temp[,'AreaSwept'],'km^3')), #km^2 based on haversine distance  times trawl width 50 m.
+                a_i = (as_units(sforage$effort,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = sebs_user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=sforage$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+```
+
