@@ -92,7 +92,7 @@ NBS.sample.size <- nbs.ts %>%
 ## compare w/ EY timeseries
 read in ellens timeseries to do some comparisons
 ```{r}
-ey_ts <- read.csv("Ellen_ESR_NBS_10_01_24_v2.csv")
+ey_ts <- read.csv("../EY_ESR_BASIS-Fish/Ellen_ESR_NBS_10_01_24_v2.csv")
 
 length(unique(ey_ts$StationID)) # 928 stations
 length(unique(nbs.ts$station_id)) # 926
@@ -169,7 +169,7 @@ Realistically for 2025, we're only trying to run VAST three times for three diff
 ```{r}
 library(VAST)
 Version = get_latest_version( package="VAST" )
-wd<-setwd("C:/Users/lia.domke/Desktop/Work/AFSC/R projects/EY_ESR_BASIS-Fish")
+wd<-setwd("C:/Users/lia.domke/Desktop/Work/AFSC/R projects/EMA-ESR")
 
 ts <- nbs.ts %>% # clean up df read to be input
   mutate(date = strptime(haul_date, "%m/%d/%Y"),
@@ -184,7 +184,7 @@ head(ts) # only neccessary data for the forage fishes (see ESR for included spec
 # forage is in weight kg
 
 # pull in custom NBS user region
-user_region <- readRDS("NBS_user_region.rds")
+user_region <- readRDS("Region files/NBS_user_region.rds")
 ```
 
 # Custom directory fxn
@@ -216,6 +216,16 @@ ObsModel isn't in the documentation for make_settings or make_data; there is Obs
 
 Changed settings to match those in Yasumiishi's retiree drive: NBS Forage Fish ARchive 2023
 ```{r}
+# ObsModel = c(PosDis, Link) 
+# PosDis (obs) : 0= delta- Normal, 1= delta-lognormal, 2= delta-gamma
+# Link (Model) : 0 = Delta w/ logit link for encounter & log-link for pos
+#                1= Poisson-link delta model w/ log-link for density and biomass 
+#                2= Tweedie distribution
+
+#TMBhelper::fit_tmb( Obj )
+#  check_fit(fit,check_gradients = TRUE
+
+
 settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
                           n_x=500, #500 except maybe sockeye
                           Region='User', #user defined, uses NBS region and input in fit_model
