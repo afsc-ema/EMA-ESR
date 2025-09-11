@@ -14,6 +14,11 @@ Libraries
 ```{r}
 library(EMAdownload)
 library(tidyverse)
+library(VAST)
+Version = get_latest_version( package="VAST" )
+wd<-setwd("C:/Users/lia.domke/Desktop/Work/AFSC/R projects/EMA-ESR")
+# pull in custom NBS user region
+user_region <- readRDS("Region files/NBS_user_region.rds")
 ```
 
 # NBS VAST 
@@ -35,7 +40,8 @@ subset(all.tax, species_tsn %in% c(tsn))
 
 # best to not continuously re run this line of code cause it throws strange errors
 # instead you should remove the previous "catch" data in the global environment and re run if you want to
-catch <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
+# make sure if you re run do rm(catch) first
+df <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
                          tsn = tsn, trawl_method = "S", catch0 = TRUE) 
 # run it once and then adjust output
 
@@ -45,7 +51,7 @@ catch <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
 # if you include squid - its all squid species in database
 # if you include jellyfish - its Aequorea sp, aurelia sp chrysora, cyanea, staurophora, and phacellephora
 # include only region between 59.9 and 65.5
-nbs.ts <-catch %>%
+nbs.ts <- df %>%
   dplyr::select(-c(akfin_load_date.x, akfin_load_date.y, oceanographic_domain, bsierp_region,
                    gear_in_time, gear_in_latitude, gear_in_longitude, gear_out_time, gear_out_latitude,
                    gear_out_longitude, race_code, nodc_code)) %>%
@@ -167,10 +173,6 @@ Realistically for 2025, we're only trying to run VAST three times for three diff
 
 **One thing to note about VAST is that it saves the data to a strange directory that I can't access (easily) so Tristen helped provide a function that writes the model outputs to a specific directory. 
 ```{r}
-library(VAST)
-Version = get_latest_version( package="VAST" )
-wd<-setwd("C:/Users/lia.domke/Desktop/Work/AFSC/R projects/EMA-ESR")
-
 ts <- nbs.ts %>% # clean up df read to be input
   mutate(date = strptime(haul_date, "%m/%d/%Y"),
          julian = yday(date)) %>%
@@ -183,8 +185,15 @@ ts$doy <- scale(ts$julian, center = TRUE) # EY code says it scales to 0 to 1, bu
 head(ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
 # forage is in weight kg
 
-# pull in custom NBS user region
-user_region <- readRDS("Region files/NBS_user_region.rds")
+## repeat with ellen's timeseries to match outputs
+ey <- ey_ts %>%
+  mutate(date = mdy(HaulDate),
+         julian = yday(date)) %>%
+  dplyr::select(c(StationID, Year, julian, Lat, Lon, AreaSwept, Forage))
+
+ey$doy <- scale(ey$julian, center = TRUE)
+
+
 ```
 
 # Custom directory fxn
@@ -214,7 +223,13 @@ FieldConfig but when looking at it I'm not sure what the 1 stands for 0 looks li
 
 ObsModel isn't in the documentation for make_settings or make_data; there is ObsModel_ez but it is unclear if that is the same thing. 
 
-Changed settings to match those in Yasumiishi's retiree drive: NBS Forage Fish ARchive 2023
+Changed settings to match those in Yasumiishi's retiree drive: NBS Forage Fish ARchive 2023:[fieldconfig (1,1,1,1) ObsModel (2,3)]
+
+From NBS 2022: 1111, 2,3
+
+From SBS 2024 (I think) FieldConfig: 1, 0, 1, 1 ObsModel (2, 3)
+
+Forage NBS 2023  1111 2,3
 ```{r}
 # ObsModel = c(PosDis, Link) 
 # PosDis (obs) : 0= delta- Normal, 1= delta-lognormal, 2= delta-gamma
@@ -227,14 +242,14 @@ Changed settings to match those in Yasumiishi's retiree drive: NBS Forage Fish A
 
 
 settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
-                          n_x=500, #500 except maybe sockeye
+                          n_x=500, #500 for final model run; run at 200 for faster output
                           Region='User', #user defined, uses NBS region and input in fit_model
                           purpose="index2", #uses gamma distribution for positive catch, uses bias correction
                           bias.correct=TRUE,
                           max_cells = 2000,
                           ObsModel=c(2,3), 
                           # unclear what the FieldConfig should or should not be. 
-                          FieldConfig=c(1,1,1,1),	#(01,E1,O2,E2) #N Pcod 0001
+                          FieldConfig=c(1,0,1,1),	#(01,E1,O2,E2) #N Pcod 0001
                           # field config also is 1010 in the 2021 NBS forage so could be either, but has anisotropy as false so likely not what we want
                           Options=c(SD_site_logdensity=TRUE, Calculate_Range = TRUE,
                                     Calculate_effective_area = TRUE),
@@ -248,7 +263,8 @@ settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (
 
 ## Fit model Forage complex
 ```{r}
-species <- "Forage complex"
+species <- "Forage complex_ey" # changed name so I know I'm using odl uncorrected data
+# if you are using old data running the lower fit
 pd <- paste0(getwd(), '/', Date, '/', species)
 
 fit = fit_model_to_dir( 
@@ -276,6 +292,28 @@ fit = fit_model_to_dir(
                  input_grid = user_region,
                  getReportCovariance = TRUE ,
                  catchability_data = data.frame(date=ts$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+
+### re run with old timeseries : 
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = ey$Lat,
+                 Lon_i = ey$Lon,
+                 observations_LL = ey[,c('Lat','Lon')],
+                 t_i = ey$Year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(ey$Forage,'kg')), #Catch in weight at each station
+                a_i = (as_units(ey$AreaSwept,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=ey$doy)#, #Day of year for catchability
                 # Q2_formula = ~ date
 )
 ```
@@ -359,11 +397,13 @@ mean.fish_D_VAST
 
 out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
 #write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_ForageComplex_NBS_D.csv"), row.names = TRUE)
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_ForageComplex_NBS_D_ey_ts.csv"), row.names = TRUE)
 ```
 
 
 # Pollock age 0
 ## Settings Pollock age 0
+
 ```{r}
 head(nbs.ts)
 pollock.ts <- nbs.ts %>% # clean up df read to be input
@@ -377,9 +417,23 @@ pollock.ts$doy <- scale(pollock.ts$julian, center = TRUE) # EY code says it scal
 
 head(pollock.ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
 # forage is in weight kg
+
+## repeat with ellen's timeseries to match outputs
+pollock_ey <- ey_ts %>%
+  mutate(date = mdy(HaulDate),
+         julian = yday(date)) %>%
+  dplyr::select(c(StationID, Year, julian, Lat, Lon, AreaSwept, A0_Pollock))
+
+pollock_ey$doy <- scale(ey$julian, center = TRUE)
 ```
 
-Used settings from the NBS Pollock 2022 ABL retiree googld drive
+Used settings from ABL retiree googld drive:
+
+2022 NBS A0 pollock obsmodel(2,3) fieldconfig(1,1,1,1)
+2023 NBS A0 pollock 1111 2,3
+
+From the SBS pollock (2024 I think) - field config 1, 1, 0, 1; obs model 2, 3
+- Notes this configuration with the NBS data had issues with the L_epsilon1_z estimate
 ```{r}
 settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
                           n_x=500, #500 for all except sockeye (unsure if this is for weight or number)
@@ -401,7 +455,7 @@ settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (
 
 ## Pollock fit model
 ```{r}
-species <- "Pollock_age0"
+species <- "Pollock_age0_ey"
 pd <- paste0(getwd(), '/', Date, '/', species)
 
 fit = fit_model_to_dir( 
@@ -429,6 +483,27 @@ fit = fit_model_to_dir(
                  input_grid = user_region,
                  getReportCovariance = TRUE ,
                  catchability_data = data.frame(date=pollock.ts$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+
+### Re run VAST with EY old timeseries
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = pollock_ey$Lat,
+                 Lon_i = pollock_ey$Lon,
+                 observations_LL = pollock_ey[,c('Lat','Lon')],
+                 t_i = pollock_ey$Year, 
+                 b_i = (as_units(pollock_ey$A0_Pollock,'kg')), #Catch in weight at each station
+                a_i = (as_units(pollock_ey$AreaSwept,'km^2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=pollock_ey$doy)#, #Day of year for catchability
                 # Q2_formula = ~ date
 )
 ```
@@ -514,6 +589,7 @@ mean.fish_D_VAST
 
 out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
 #write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Pollock0_NBS_D.csv"), row.names = TRUE)
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Pollock0_EYTS_NBS_D.csv"), row.names = TRUE)
 ```
 
 
@@ -533,9 +609,19 @@ herring.ts$doy <- scale(herring.ts$julian, center = TRUE) # EY code says it scal
 
 head(herring.ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
 # forage is in weight kg
+
+## RE RUN VAST WITH old timeseries
+herring_ey <- ey_ts %>%
+  mutate(date = mdy(HaulDate),
+         julian = yday(date)) %>%
+  dplyr::select(c(StationID, Year, julian, Lat, Lon, AreaSwept, Herring))
+
+herring_ey$doy <- scale(herring_ey$julian, center = TRUE)
 ```
 
 ## Herring settings
+SEBS from 2024 ( I think): FieldConfig: 1, 1, 0, 1 and ObsModel (2,3)
+NBS 2023 1011 2,3
 ```{r}
 settings = make_settings(Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
                           n_x=500, #500 for all except sockeye (unsure if this is for weight or number)
@@ -555,7 +641,7 @@ settings = make_settings(Version="VAST_v14_0_1", # defaults to latest version (2
 
 ## Fit model
 ```{r}
-species <- "Pacific_Herring"
+species <- "Pacific_Herring_ey"
 pd <- paste0(getwd(), '/', Date, '/', species)
 
 fit = fit_model_to_dir( 
@@ -583,6 +669,28 @@ fit = fit_model_to_dir(
                  input_grid = user_region,
                  getReportCovariance = TRUE ,
                  catchability_data = data.frame(date=herring.ts$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+
+### RE RUN VAST with old timeseries 
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = herring_ey$Lat,
+                 Lon_i = herring_ey$Lon,
+                 observations_LL = herring_ey[,c('Lat','Lon')],
+                 t_i = herring_ey$Year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(herring_ey$Herring,'kg')), #Catch in weight at each station
+                a_i = (as_units(herring_ey$AreaSwept,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=herring_ey$doy)#, #Day of year for catchability
                 # Q2_formula = ~ date
 )
 ```
@@ -670,6 +778,7 @@ mean.fish_D_VAST
 
 out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
 #write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Herring_NBS_D.csv"), row.names = TRUE)
+# write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Herring_EYTS_NBS_D.csv"), row.names = TRUE)
 
 ```
 
@@ -689,17 +798,28 @@ capelin.ts$doy <- scale(capelin.ts$julian, center = TRUE) # EY code says it scal
 
 head(capelin.ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
 # forage is in weight kg
+
+#REdefine with old data
+capelin_ey <- ey_ts %>%
+  mutate(date = mdy(HaulDate),
+         julian = yday(date)) %>%
+  dplyr::select(c(StationID, Year, julian, Lat, Lon, AreaSwept, Capelin))
+
+capelin_ey$doy <- scale(capelin_ey$julian, center = TRUE)
 ```
 
 ## Settings
+2022 NBS is 1111, 1,3
+2024 (I think) SEBS has fieldConfig 1,1,1,1 and ObsModel 2,3
+NBS 2023 capelin 1111 2,3
 ```{r}
 settings = make_settings(Version="VAST_v14_0_1", # defaults to latest version (2025: v14_0_1)
-                          n_x=500, #500 for all except sockeye (unsure if this is for weight or number)
+                          n_x=200, #500 for all except sockeye (unsure if this is for weight or number)
                           Region='User', # user defined, uses NBS region and will be input in fit_model
                           purpose="index2", # uses gamma distribution for positive catch, uses bias correction
                           bias.correct=TRUE,
                           max_cells = 2000,
-                          ObsModel=c(2,3), # based off of 2023 capelin
+                          ObsModel=c(10,2), # based off of 2023 capelin
                           FieldConfig=c(1,1,1,1),	# capelin 2023
                           Options=c('SD_site_logdensity'=TRUE,'Calculate_Range'=TRUE,'Calculate_effective_area'=TRUE),
                           fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
@@ -710,7 +830,7 @@ settings = make_settings(Version="VAST_v14_0_1", # defaults to latest version (2
 
 ## Fit model
 ```{r}
-species <- "Capelin"
+species <- "Capelin_ObsModel_102"
 pd <- paste0(getwd(), '/', Date, '/', species)
 
 fit = fit_model_to_dir( 
@@ -741,11 +861,37 @@ fit = fit_model_to_dir(
                 # Q2_formula = ~ date
 )
 
+### RE RUN VAST with old timeseries 
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = capelin_ey$Lat,
+                 Lon_i = capelin_ey$Lon,
+                 observations_LL = capelin_ey[,c('Lat','Lon')],
+                 t_i = capelin_ey$Year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(capelin_ey$Capelin,'kg')), #Catch in weight at each station
+                a_i = (as_units(capelin_ey$AreaSwept,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=capelin_ey$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+
 ```
 
 ```{r}
 plot_to_dir(pd = pd,
             fit)
+
+# use check_fit to look at the gradient and make sure its appropriate
+check_fit(fit$parameter_estimates, check_gradients = TRUE)
+# this is a TMB helper fxn 
 ```
 
 
@@ -822,7 +968,7 @@ mean.fish_D_VAST
 out.dat.2<-data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
 
 #write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Capelin_NBS_D.csv"), row.names = TRUE)
-
+write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_Capelin_EYTS_50_NBS_D.csv"), row.names = TRUE)
 ```
 
 # SEBS VAST 
@@ -848,7 +994,7 @@ subset(all.tax, species_tsn %in% c(tsn))
 # best to not continuously re run this line of code cause it throws strange errors
 # instead you should remove the previous "catch" data in the global environment and re run if you want to
 
-head(catch)
+head(df)
 # if catch isn't in the global environment then you can re-run the code below. 
 # catch <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
 #                          tsn = tsn, trawl_method = "S", catch0 = TRUE) 
@@ -861,7 +1007,7 @@ head(catch)
 # if you include squid - its all squid species in database
 # if you include jellyfish - its Aequorea sp, aurelia sp chrysora, cyanea, staurophora, and phacellephora
 # include only region where <= 59.9, tow type = S and year >=2003
-sebs.ts <- catch %>%
+sebs.ts <- df %>%
   dplyr::select(-c(akfin_load_date.x, akfin_load_date.y, oceanographic_domain, bsierp_region,
                    gear_in_time, gear_in_latitude, gear_in_longitude, gear_out_time, gear_out_latitude,
                    gear_out_longitude, race_code, nodc_code)) %>%
@@ -901,17 +1047,19 @@ sebs.sample.size <- sebs.ts %>%
   group_by(sample_year) %>%
   dplyr::summarize(n()) # this is slight diff in 2014 for n because akfin removed the U and A tows 
 # see below. 
-#write.csv(sebs.sample.size, paste0("SEBS_updated_sample_size_", this.year, ".csv"))
+#write.csv(sebs.sample.size, paste0("Region files/SEBS_updated_sample_size_", this.year, ".csv"))
 ```
 
 ## compare w/ sebs ey
 ```{r}
-ey_sebs <- read.csv("Ellen_ESR_9_25_24_V4.csv")
+ey_sebs <- read.csv("../EY_ESR_BASIS-Fish/Ellen_ESR_9_25_24_V4.csv")
 
 length(unique(ey_sebs$StationID)) # 981 stations
 length(unique(sebs.ts$station_id)) # 982
 
+unique(ey_sebs$Year)
 
+filter(ey_sebs, Year == 2008)
 
 anti_join(ey_sebs, sebs.ts, by = c("StationID" = "station_id"))
 # no stations in ey pull that aren't in akfin
@@ -1033,7 +1181,18 @@ head(sforage) # only neccessary data for the forage fishes (see ESR for included
 # forage is in weight kg
 
 # pull in custom NBS user region
-sebs_user_region <- readRDS("user_region.rds")
+sebs_user_region <- readRDS("Region files/user_region.rds")
+
+
+### use old data
+head(ey_sebs)
+forage_ey <- ey_sebs %>%
+  mutate(date = mdy(HaulDate),
+         julian = yday(date)) %>%
+  dplyr::select(c(StationID, Year, Lat, Lon, AreaSwept, Effort_Units,
+                                      Forage, julian))
+
+forage_ey$doy <- scale(forage_ey$julian, center = TRUE)
 ```
 
 ## Settings
@@ -1046,7 +1205,7 @@ settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (
                           max_cells = 2000,
                           ObsModel=c(2,3), 
                           # unclear what the FieldConfig should or should not be. 
-                          FieldConfig=c(1,1,1,1),	# I think this is 2023 forage
+                          FieldConfig=c(1,0,1,1),	# I think this is 2023 forage
                           Options=c(SD_site_logdensity=TRUE, Calculate_Range = TRUE,
                                     Calculate_effective_area = TRUE),
                           fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
@@ -1059,8 +1218,9 @@ settings = make_settings( Version="VAST_v14_0_1", # defaults to latest version (
 ## Fit model
 ```{r}
 region <- "SEBS"
-species <- "Forage complex"
+species <- "Forage complex_ey"
 pd <- paste0(getwd(), '/', Date, '/', region, '/', species)
+
 
 fit = fit_model_to_dir( 
                  d = pd,
@@ -1089,5 +1249,122 @@ fit = fit_model_to_dir(
                  catchability_data = data.frame(date=sforage$doy)#, #Day of year for catchability
                 # Q2_formula = ~ date
 )
+
+
+
+#### fit with old data ####
+fit = fit_model_to_dir( 
+                 d = pd,
+                 settings = settings,
+                 Lat_i = forage_ey$Lat,
+                 Lon_i = forage_ey$Lon,
+                 observations_LL = forage_ey[,c('Lat','Lon')],
+                 t_i = forage_ey$Year, 
+                 #"b_i"=(as_units(log(temp[,'Arctic_Lamprey_Wt_kg']+1),'kg')), #Catch in numbers at each station
+                 b_i = (as_units(forage_ey$Forage,'kg')), #Catch in weight at each station
+                 #"b_i"=(as_units(temp[,'No'],'count')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'J_Sockeye_Num'],'count')), #Catch in numbers at each station
+                 #"b_i"=(as_units(temp[,'Capelin'],'kg')), #Catch in numbers at each station
+                # "b_i"=(as_units(log(temp[,'A0_Pollock']+1),'kg')), #Catch in numbers at each station
+                #"b_i"=(as_units(log(temp[,'A0_Herring']+1),'kg')), #Catch in numbers at each station
+                 # "b_i"=(as_units(temp[,'A0_Pcod'],'kg')), #Catch in numbers at each station
+                 #"a_i"=(as_units(temp[,'AreaSwept'],'km^3')), #km^2 based on haversine distance  times trawl width 50 m.
+                a_i = (as_units(forage_ey$AreaSwept,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+                getsd = TRUE,
+                # bias.correct.control = list(sd = TRUE, split = NULL, nsplit = NULL, vars_to_correct = NULL),
+                 test_fit =TRUE,
+                 #"maximum_distance_from_sample" = 75,
+                 build_model  = TRUE,
+                 input_grid = sebs_user_region,
+                 getReportCovariance = TRUE ,
+                 catchability_data = data.frame(date=forage_ey$doy)#, #Day of year for catchability
+                # Q2_formula = ~ date
+)
+```
+
+## plot fit
+```{r}
+plot_to_dir(pd = pd,
+            fit)
+
+check_fit(fit$parameter_estimates)
+```
+
+
+```{r}
+## Remake map list locally for recreating plots
+mdl <- make_map_info(Region = settings$Region,
+                     spatial_list = fit$spatial_list,
+                     Extrapolation_List = fit$extrapolation_list)
+#Densities at each extrapolation grid location
+fit$Report$D_gct
+#Densities at each extrapolation grid location
+names(fit$Report)[grepl('_gc|_gct', x=names(fit$Report))]
+D_gt <- fit$Report$D_gct[,1,] # drop the category
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=c(2003:2019))
+#dimnames(D_gt) <- list(cell=1:nrow(D_gt), year=years)
+## tidy way of doing this, reshape2::melt() does
+## it cleanly but is deprecated
+#?pivot_longer.sf
+#?rownames_to_column
+#require(tibble)
+#library(tidyverse)
+#?pivot_longer
+D_gt <- D_gt %>% as.data.frame() %>%
+  tibble::rownames_to_column(var = "cell") %>%
+  #tibble::rownames_to_column(var = "cell") %>%
+  pivot_longer(-cell, names_to = "Year", values_to='D')
+D <- merge(D_gt, mdl$PlotDF, by.x='cell', by.y='x2i')
+D3<-lapply(((D)), as.numeric)
+D4<-data.frame(D3)
+head(D4)
+summary(exp(D4$D))
+summary((D4$D))
+
+#Subet D values greater than .1% of D to plot
+#D02 <- D4[which((D$Year == "2002")),names(D4) %in% c("Year","D","Lat","Lon")]
+D03 <- D4[which(D$Year == "2003"),names(D4) %in% c("Year","D","Lat","Lon")]
+D04 <- D4[which(D$Year == "2004"),names(D4) %in% c("Year","D","Lat","Lon")]
+D05 <- D4[which(D$Year == "2005"),names(D4) %in% c("Year","D","Lat","Lon")]
+D06 <- D4[which(D$Year == "2006"),names(D4) %in% c("Year","D","Lat","Lon")]
+D07 <- D4[which(D$Year == "2007"),names(D4) %in% c("Year","D","Lat","Lon")]
+D08 <- D4[which(D$Year == "2008"),names(D4) %in% c("Year","D","Lat","Lon")]
+D09 <- D4[which(D$Year == "2009"),names(D4) %in% c("Year","D","Lat","Lon")]
+D10 <- D4[which(D$Year == "2010"),names(D4) %in% c("Year","D","Lat","Lon")]
+D11 <- D4[which(D$Year == "2011"),names(D4) %in% c("Year","D","Lat","Lon")]
+D12 <- D4[which(D$Year == "2012"),names(D4) %in% c("Year","D","Lat","Lon")]
+D13 <- D4[which(D$Year == "2013"),names(D4) %in% c("Year","D","Lat","Lon")]
+D14 <- D4[which(D$Year == "2014"),names(D4) %in% c("Year","D","Lat","Lon")]
+D15 <- D4[which(D$Year == "2015"),names(D4) %in% c("Year","D","Lat","Lon")]
+D16 <- D4[which(D$Year == "2016"),names(D4) %in% c("Year","D","Lat","Lon")]
+D17 <- D4[which(D$Year == "2017"),names(D4) %in% c("Year","D","Lat","Lon")]
+D18 <- D4[which(D$Year == "2018"),names(D4) %in% c("Year","D","Lat","Lon")]
+D19 <- D4[which(D$Year == "2019"),names(D4) %in% c("Year","D","Lat","Lon")]
+D21 <- D4[which(D$Year == "2021"),names(D4) %in% c("Year","D","Lat","Lon")]
+D22 <- D4[which(D$Year == "2022"),names(D4) %in% c("Year","D","Lat","Lon")]
+D23 <- D4[which(D$Year == "2023"),names(D4) %in% c("Year","D","Lat","Lon")]
+D24 <- D4[which(D$Year == "2024"),names(D4) %in% c("Year","D","Lat","Lon")]
+
+
+dat5<-rbind(D03,D04,D05,D06,D07,D08, D09,D10,D11,D12,D13,D14,D15,D16,D17,D18,D19,D21,D22,D23,D24) 
+
+
+dat6<-lapply(dat5, as.numeric)
+dat7<-data.frame(dat6)
+summary(dat7)
+
+#write.csv(dat7, paste0(pd,"/", Date,"_Density_ForageComplex_SEBS_VAST_TotalArea.csv"))
+
+mean.fish_D_VAST<- dat7 %>% group_by(Year) %>% summarize(mean=mean(D))
+SD.fish_D_VAST<-dat7 %>% group_by(Year) %>% summarize(SD=(sd(D)))
+
+SD.fish_D_VAST
+mean.fish_D_VAST
+
+
+out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_ForageComplex_SEBS_D.csv"), row.names = TRUE)
+#write.csv(out.dat.2, paste0(pd,"/", Date,"_Surface_ForageComplex_SEBS_D_ey_ts.csv"), row.names = TRUE)
+
 ```
 

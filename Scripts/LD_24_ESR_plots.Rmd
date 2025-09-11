@@ -10,33 +10,60 @@ editor_options:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# libraries
 ```{r}
 library(tidyverse)
 library(cowplot)
 ```
 
-
+# Input data
 Read in timeseries that were generated from the VAST model runs in 24_VAST_Runs
 ```{r}
-forage <- read.csv("2025-07-22/Forage complex/2025-07-22_Surface_ForageComplex_NBS_D.csv") %>% dplyr::select(-c(X, Year.1)) %>%
+forage <- #read.csv("2025-07-22/Forage complex/2025-07-22_Surface_ForageComplex_NBS_D.csv") %>% dplyr::select(-c(X, Year.1)) %>%
+  read.csv("2025-08-14/Forage complex_ey/2025-08-14_Surface_ForageComplex_NBS_D_ey_ts.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
   dplyr::rename(forage_kgkm2 = mean,
                 forage_sd = SD)
-herring <- read.csv("2025-07-22/Pacific_Herring/2025-07-22_Surface_Herring_NBS_D.csv") %>% dplyr::select(-c(X, Year.1)) %>%
+
+
+herring <- #read.csv("VAST_Outputs/2025-07-22/Pacific_Herring/2025-07-22_Surface_Herring_NBS_D.csv") %>% 
+  read.csv("2025-08-14/Pacific_Herring_ey/2025-08-14_Surface_Herring_EYTS_NBS_D.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
   dplyr::rename(herring_kgkm2 = mean,
                 herring_sd = SD)
-pollock <- read.csv("2025-07-22/Pollock_age0/2025-07-22_Surface_Pollock0_NBS_D.csv") %>% dplyr::select(-c(X, Year.1)) %>%
+
+pollock <- #read.csv("VAST_Outputs/2025-07-22/Pollock_age0/2025-07-22_Surface_Pollock0_NBS_D.csv") %>% 
+  read.csv("2025-08-22/Pollock_age0_ey/2025-08-22_Surface_Pollock0_EYTS_NBS_D.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
   dplyr::rename(pollock_kgkm2 = mean,
                 pollock_sd = SD)
-capelin <- read.csv("2025-07-23/Capelin/2025-07-23_Surface_Capelin_NBS_D.csv") %>% dplyr::select(-c(X, Year.1)) %>%
+
+capelin <- #read.csv("VAST_Outputs/2025-07-23/Capelin/2025-07-23_Surface_Capelin_NBS_D.csv") %>% 
+  #read.csv("2025-08-25/Capelin_ey/2025-08-25_Surface_Capelin_EYTS_NBS_D.csv") %>%
+  read.csv("2025-08-25/Capelin_ObsModel_50/2025-08-25_Surface_Capelin_EYTS_50_NBS_D.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
   dplyr::rename(capelin_kgkm2 = mean,
                 capelin_sd = SD)
 
-NBS.sample.size <- read.csv("NBS_updated_sample_size_2024.csv") %>%
+NBS.sample.size <- read.csv("Region files/NBS_updated_sample_size_2024.csv") %>%
   dplyr::select(-X) %>% dplyr::rename(n = n..)
 ```
 
+## SEBS data
 ```{r}
-vast.ts <- forage %>%
+forage_sebs <- #read.csv("2025-07-22/Forage complex/2025-07-22_Surface_ForageComplex_NBS_D.csv") %>% 
+  read.csv("2025-08-27/SEBS/Forage complex_ey/2025-08-27_Surface_ForageComplex_SEBS_D_ey_ts.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
+  dplyr::rename(forage_kgkm2 = mean,
+                forage_sd = SD)
+
+SEBS.sample.size <- read.csv("Region files/SEBS_updated_sample_size_2024.csv") %>%
+  dplyr::select(-X) %>% dplyr::rename(n = n..)
+```
+
+
+```{r}
+nbs.ts <- forage %>%
   left_join(herring, by = "Year") %>%
   left_join(pollock, by = "Year") %>%
   left_join(capelin, by = "Year") %>%
@@ -45,16 +72,27 @@ vast.ts <- forage %>%
   mutate(forage_se = forage_sd/sqrt(n),
          herring_se = herring_sd/sqrt(n),
          pollock_se = pollock_sd/sqrt(n),
-         capelin_se = capelin_sd/sqrt(n))
+         capelin_se = capelin_sd/sqrt(n)) %>%
+  mutate(region = "NBS")
+
+sebs.ts <- forage_sebs %>%
+  left_join(SEBS.sample.size, by = c("Year" = "sample_year")) %>%
+  complete(Year = 2003:2024) %>%
+  mutate(forage_se = forage_sd/sqrt(n)) %>%
+  mutate(region = "SEBS")
+
+vast.ts <- full_join(nbs.ts, sebs.ts)
 ```
 
 
 # Forage plot
 ```{r}
-forage.plot <- ggplot(aes(x = Year, y = forage_kgkm2), data = vast.ts) +
+forage.plot <- ggplot(aes(x = Year, y = forage_kgkm2, group = region, 
+                          color = region), data = vast.ts) +
   geom_point(size=2)+
   geom_line()+
-  geom_errorbar(aes(ymin = forage_kgkm2 - forage_se, ymax = forage_kgkm2 + forage_se), width=.1, 
+  geom_errorbar(aes(ymin = forage_kgkm2 - forage_se, ymax = forage_kgkm2 + forage_se,
+                    group = region, color = region), width=.1, 
                 position=position_dodge(0.05)) +
   theme_cowplot(12)+
   ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
@@ -65,7 +103,8 @@ forage.plot <- ggplot(aes(x = Year, y = forage_kgkm2), data = vast.ts) +
         legend.title = element_text(size = 16),
         axis.text = element_text(size = 12),
         panel.background = element_rect(colour = "black", linewidth=1))+
-  scale_y_continuous(limits = c(0, 650)) +
+  #scale_y_continuous(limits = c(0, 650)) +
+  scale_color_manual(values=c('#003366','#0099CC'))+
   #scale_color_manual(values=c('#003366','#0099CC'))+
   geom_point(size=1)
 #grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
@@ -121,6 +160,7 @@ herring.plot <- ggplot(aes(x = Year, y = herring_kgkm2), data = vast.ts) +
 herring.plot
 ```
 
+# Capelin plot
 ```{r}
 caplin.plot <- ggplot(aes(x = Year, y = capelin_kgkm2), data = vast.ts) +
   geom_point(size=2)+
@@ -147,9 +187,33 @@ caplin.plot
 
 ```{r}
 year <- 2024
-ggsave(paste0("2025-07-22/", year, "_Fall_Herring_timeseries.png"), herring.plot)
-ggsave(paste0("2025-07-22/", year, "_Fall_Pollock_timeseries.png"), pollock.plot)
-ggsave(paste0("2025-07-22/", year, "_Fall_Forage_timeseries.png"), forage.plot)
-ggsave(paste0("2025-07-23/", year, "_Fall_Capelin_timeseries.png"), caplin.plot)
+# ggsave(paste0("2025-08-14/", year, "_Fall_Herring_timeseries.png"), herring.plot)
+# ggsave(paste0("2025-08-22/", year, "_Fall_Pollock_timeseries.png"), pollock.plot)
+# ggsave(paste0("2025-08-22/", year, "_Fall_Forage_timeseries.png"), forage.plot)
+# ggsave(paste0("2025-08-25/", year, "_Fall_Capelin_timeseries.png"), caplin.plot)
+```
+
+# SEBS forage plot
+```{r}
+sebs.forage.plot <- ggplot(aes(x = Year, y = forage_kgkm2), data = sebs.ts) +
+  geom_point(size=2)+
+  geom_line()+
+  geom_errorbar(aes(ymin = forage_kgkm2 - forage_se, ymax = forage_kgkm2 + forage_se), width=.1, 
+                position=position_dodge(0.05)) +
+  theme_cowplot(12)+
+  ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
+  labs(title="SEBS Forage complex - Late Summer/Fall Surface Trawl Surveys", x="Year", cex=3)+
+  theme(legend.position = "right",
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(colour = "black", linewidth=1))+
+  #scale_y_continuous(limits = c(0, 650)) +
+  #scale_color_manual(values=c('#003366','#0099CC'))+
+  geom_point(size=1)
+#grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
+
+sebs.forage.plot
 ```
 
