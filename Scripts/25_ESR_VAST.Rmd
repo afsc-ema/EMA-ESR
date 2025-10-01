@@ -503,10 +503,10 @@ out.dat.2 <- data.frame(mean.fish_D_VAST, SD.fish_D_VAST)
 
 # Herring (all ages) settings
 ```{r}
-names(nbs.ts)
+names(updated.ts)
 
-head(nbs.ts)
-herring.ts <- nbs.ts %>% # clean up df read to be input
+head(updated.ts)
+herring.ts <- updated.ts %>% # clean up df read to be input
   mutate(date = strptime(haul_date, "%m/%d/%Y"),
          julian = yday(date)) %>%
    dplyr::select(c(station_id, sample_year, julian, eq_latitude, eq_longitude, effort, effort_units, `Pacific Herring_All`)) %>%
@@ -636,9 +636,9 @@ D21 <- D4[which(D$Year == "2021"),names(D4) %in% c("Year","D","Lat","Lon")]
 D22 <- D4[which(D$Year == "2022"),names(D4) %in% c("Year","D","Lat","Lon")]
 D23 <- D4[which(D$Year == "2023"),names(D4) %in% c("Year","D","Lat","Lon")]
 D24 <- D4[which(D$Year == "2024"),names(D4) %in% c("Year","D","Lat","Lon")]
-
+D25 <- D4[which(D$Year == "2025"),names(D4) %in% c("Year","D","Lat","Lon")]
 #NEBS - no 2008
-D5<-rbind(D03,D04,D05,D06,D07, D09,D10,D11,D12,D13,D14,D15,D16,D17,D18,D19,D21,D22,D23,D24) 
+D5<-rbind(D03,D04,D05,D06,D07, D09,D10,D11,D12,D13,D14,D15,D16,D17,D18,D19,D21,D22,D23,D24,D25) 
 
 
 D6<-lapply(D5, as.numeric)

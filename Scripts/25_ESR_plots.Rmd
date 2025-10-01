@@ -31,10 +31,10 @@ forage <- read.csv("2025-09-30/Forage complex/2025-09-30_Surface_ForageComplex_N
                 forage_sd = SD)
 
 
-# herring <- read.csv("VAST_Outputs/2025-07-22/Pacific_Herring/2025-07-22_Surface_Herring_NBS_D.csv") %>% 
-#   dplyr::select(-c(X, Year.1)) %>%
-#   dplyr::rename(herring_kgkm2 = mean,
-#                 herring_sd = SD)
+herring <- read.csv("2025-09-30/Pacific_Herring/2025-09-30_Surface_Herring_NBS_D.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
+  dplyr::rename(herring_kgkm2 = mean,
+                herring_sd = SD)
 
 pollock <- read.csv("2025-09-30/Pollock_age0/2025-09-30_Surface_Pollock0_NBS_D.csv") %>% 
   dplyr::select(-c(X, Year.1)) %>%
@@ -74,13 +74,13 @@ SEBS.sample.size <- read.csv("Region files/SEBS_updated_sample_size_2024.csv") %
 
 ```{r}
 nbs.ts <- pollock %>%
-  #left_join(herring, by = "Year") %>%
+  left_join(herring, by = "Year") %>%
   left_join(forage, by = "Year") %>%
   #left_join(capelin, by = "Year") %>%
   left_join(NBS.sample.size, by = c("Year" = "sample_year")) %>%
   complete(Year = 2003:this.year) %>%
   mutate(forage_se = forage_sd/sqrt(n),
-         #herring_se = herring_sd/sqrt(n),
+         herring_se = herring_sd/sqrt(n),
          pollock_se = pollock_sd/sqrt(n),
          #capelin_se = capelin_sd/sqrt(n),
          ) %>%
@@ -158,26 +158,28 @@ pollock.plot
 
 # Herring plot
 ```{r}
-herring.plot <- ggplot(aes(x = Year, y = herring_kgkm2), data = vast.ts) +
+herring.plot <- ggplot(aes(x = Year, y = herring_kgkm2, group = region, color = region), data = vast.ts) +
   geom_point(size=2)+
   geom_line()+
   geom_errorbar(aes(ymin = herring_kgkm2 - herring_se, ymax = herring_kgkm2 + herring_se), width=.1, 
                 position=position_dodge(0.05)) +
   theme_cowplot(12)+
   ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
-  labs(title="Pacific herring - Late Summer/Fall Surface Trawl Surveys", x="Year", cex=3)+
+  labs(title="Pacific herring - Late Summer/Fall Surface Trawl Surveys", x="Year", color = "Region", cex=3)+
   theme(legend.position = "right",
-        axis.title = element_text(size = 16),
+        axis.title = element_text(size = 12),
         legend.text = element_text(size = 12),
-        legend.title = element_text(size = 16),
+        legend.title = element_text(size = 12),
         axis.text = element_text(size = 12),
         panel.background = element_rect(colour = "black", linewidth=1))+
-  scale_y_continuous(limits = c(0, 200)) +
-  #scale_color_manual(values=c('#003366','#0099CC'))+
+  #scale_y_continuous(limits = c(0, 200)) +
+  scale_color_manual(values=c('#003366','#0099CC'))+
   geom_point(size=1)
 #grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
 
 herring.plot
+#ggsave("Figures/2025/ESR_Fall_Herring_Timeseries.pdf", height = 6, width = 8)
+
 ```
 
 # Capelin plot
