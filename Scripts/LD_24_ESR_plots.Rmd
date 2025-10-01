@@ -16,6 +16,11 @@ library(tidyverse)
 library(cowplot)
 ```
 
+# Input params
+```{r}
+this.year <- 2024
+```
+
 # Input data
 Read in timeseries that were generated from the VAST model runs in 24_VAST_Runs
 ```{r}
@@ -68,7 +73,7 @@ nbs.ts <- forage %>%
   left_join(pollock, by = "Year") %>%
   left_join(capelin, by = "Year") %>%
   left_join(NBS.sample.size, by = c("Year" = "sample_year")) %>%
-  complete(Year = 2003:2024) %>%
+  complete(Year = 2003:this.year) %>%
   mutate(forage_se = forage_sd/sqrt(n),
          herring_se = herring_sd/sqrt(n),
          pollock_se = pollock_sd/sqrt(n),
@@ -77,7 +82,7 @@ nbs.ts <- forage %>%
 
 sebs.ts <- forage_sebs %>%
   left_join(SEBS.sample.size, by = c("Year" = "sample_year")) %>%
-  complete(Year = 2003:2024) %>%
+  complete(Year = 2003:this.year) %>%
   mutate(forage_se = forage_sd/sqrt(n)) %>%
   mutate(region = "SEBS")
 
@@ -186,11 +191,10 @@ caplin.plot
 
 
 ```{r}
-year <- 2024
-# ggsave(paste0("2025-08-14/", year, "_Fall_Herring_timeseries.png"), herring.plot)
-# ggsave(paste0("2025-08-22/", year, "_Fall_Pollock_timeseries.png"), pollock.plot)
-# ggsave(paste0("2025-08-22/", year, "_Fall_Forage_timeseries.png"), forage.plot)
-# ggsave(paste0("2025-08-25/", year, "_Fall_Capelin_timeseries.png"), caplin.plot)
+# ggsave(paste0("2025-08-14/", this.year, "_Fall_Herring_timeseries.png"), herring.plot)
+# ggsave(paste0("2025-08-22/", this.year, "_Fall_Pollock_timeseries.png"), pollock.plot)
+# ggsave(paste0("2025-08-22/", this.year, "_Fall_Forage_timeseries.png"), forage.plot)
+# ggsave(paste0("2025-08-25/", this.year, "_Fall_Capelin_timeseries.png"), caplin.plot)
 ```
 
 # SEBS forage plot
