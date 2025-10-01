@@ -979,11 +979,13 @@ Start with the catch data we already pulled above
 ```{r}
 head(all.tax)
 # If all.tax not here, re run get_ema_taxonomy
-#all.tax <- get_ema_taxonomy()
+all.tax <- get_ema_taxonomy()
 
 # Right now we're not including sand lance unident
 # QUESTIONS should we include the sand lance unident in this? tsn: 171671
-tsn <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672)
+# 2025 adjustment to include the sand lance unident
+# what about pacific sand lance? 630414
+tsn <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672, 171671, 630414)
 this.year <- 2024
 # so all data 2002 and before either had less than great data (1996 - 2001); 2002 used a smaller trawl so 
 # people don't tend to use that data. 
@@ -996,8 +998,8 @@ subset(all.tax, species_tsn %in% c(tsn))
 
 head(df)
 # if catch isn't in the global environment then you can re-run the code below. 
-# catch <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
-#                          tsn = tsn, trawl_method = "S", catch0 = TRUE) 
+df <- join_event_catch(gear = "CAN", start_year = 2003, end_year = this.year,
+                          tsn = tsn, trawl_method = "S", catch0 = TRUE) 
 
 # run it once and then adjust output
 
@@ -1009,17 +1011,20 @@ head(df)
 # include only region where <= 59.9, tow type = S and year >=2003
 sebs.ts <- df %>%
   dplyr::select(-c(akfin_load_date.x, akfin_load_date.y, oceanographic_domain, bsierp_region,
-                   gear_in_time, gear_in_latitude, gear_in_longitude, gear_out_time, gear_out_latitude,
+                   gear_in_time, gear_in_latitude, gear_in_longitude, gear_out_time,
+                   gear_out_latitude,
                    gear_out_longitude, race_code, nodc_code)) %>%
   # filter the lat/lon
   filter(eq_latitude <= 59.9) %>%
   unite(combo, c(species_tsn, lhs_code), remove = F) %>%
-  filter(lhs_code != "IM") %>% # remove all non-juvenile salmon species
-  filter(!(combo %in% c("934083_A1+", "934083_A2+", "934083_A1","934083_U", "934083_A", # remove all non a0 pollock
-                        "164711_U", # this is individuals with unknown lhs for pacific cod (keep only a0)
+  filter(lhs_code != "I_M") %>% # remove all non-juvenile salmon species
+  filter(!(combo %in% c("934083_A1+", "934083_A2+", "934083_A1","934083_U", "934083_A", 
+                        # remove all non a0 pollock
+                        "164711_U", 
+                        # this is individuals with unknown lhs for pacific cod (keep only a0)
                         "161977_U"))) %>% # this is an unknown lhs for coho salmon
   unite(name_lhs, c(common_name, lhs_code), remove = F) %>%
-  #subset(cruise_id %in% c(cruise_ids)) %>%
+  #subset(cruise_id %in% c(cruise_ids)) %>% # dont do this anymore cause ellen didn't 
   mutate(total_catch_weight_kg = total_catch_weight/1000,
          cpue_kgkm2 = total_catch_weight_kg/effort,
         haul_date = format(eq_time, "%m/%d/%Y"),
@@ -1032,7 +1037,9 @@ sebs.ts <- df %>%
   mutate(`Saffron Cod_All` = sum(`Saffron Cod_U`, `Saffron Cod_A1+`, `Saffron Cod_A0`),
          `Pacific Herring_All` = sum(`Pacific Herring_U`, `Pacific Herring_A0`, `Pacific Herring_A1+`),
          `Capelin_All` = sum(`Capelin_U`, `Capelin_A0`, `Capelin_A1+`),
-         `Arctic Sand Lance_All`= sum(`Arctic Sand Lance_A1+`, `Arctic Sand Lance_A0`),
+         `Arctic Sand Lance_All`= sum(`Arctic Sand Lance_A1+`, `Arctic Sand Lance_A0`, 
+                                      `Ammodytes personatus_U`, `Sand lance, unident._A0`,
+                                      `Sand lance, unident._U`, `Arctic Sand Lance_U`),
          `Rainbow Smelt_All` = sum(`Rainbow Smelt_A1+`, `Rainbow Smelt_A0`, `Rainbow Smelt_U`),
          Forage = sum(`Saffron Cod_All`, `Pacific Herring_All`, `Capelin_All`, `Rainbow Smelt_All`,
                       `Chum Salmon_J`, `Coho Salmon_J`, `Chinook Salmon_J`, `Pink Salmon_J`, `Sockeye Salmon_J`,

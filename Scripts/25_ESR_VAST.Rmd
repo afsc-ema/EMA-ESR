@@ -152,6 +152,7 @@ ts$doy <- scale(ts$julian, center = TRUE) # EY code says it scales to 0 to 1, bu
 
 head(ts) # only neccessary data for the forage fishes (see ESR for included species or above in script)
 # forage is in weight kg
+range(ts$sample_year)
 ```
 
 # Custom directory fxn
@@ -324,7 +325,7 @@ D6<-lapply(D5, as.numeric)
 D7<-data.frame(D6)
 summary(D7)
 
-write.csv(D7, paste0(pd,"/", Date,"_Density_ForageComplex_NBS_VAST_TotalArea.csv"))
+#write.csv(D7, paste0(pd,"/", Date,"_Density_ForageComplex_NBS_VAST_TotalArea.csv"))
 
 mean.fish_D_VAST<- D7 %>% group_by(Year) %>% summarize(mean=mean(D))
 SD.fish_D_VAST<-D7 %>% group_by(Year) %>% summarize(SD=(sd(D)))

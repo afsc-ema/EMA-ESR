@@ -1,0 +1,238 @@
+---
+title: "25_ESR_plots"
+output: html_document
+date: "2025-09-30"
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# libraries
+```{r}
+library(tidyverse)
+library(cowplot)
+```
+
+# Input params
+```{r}
+this.year <- 2025
+```
+
+# Input data
+Read in timeseries that were generated from the VAST model runs in 25_VAST_Runs
+```{r}
+forage <- read.csv("2025-09-30/Forage complex/2025-09-30_Surface_ForageComplex_NBS_D.csv") %>% 
+  dplyr::select(-c(X, Year.1)) %>%
+  dplyr::rename(forage_kgkm2 = mean,
+                forage_sd = SD)
+
+
+# herring <- read.csv("VAST_Outputs/2025-07-22/Pacific_Herring/2025-07-22_Surface_Herring_NBS_D.csv") %>% 
+#   dplyr::select(-c(X, Year.1)) %>%
+#   dplyr::rename(herring_kgkm2 = mean,
+#                 herring_sd = SD)
+
+pollock <- read.csv("2025-09-30/Pollock_age0/2025-09-30_Surface_Pollock0_NBS_D.csv") %>% 
+  dplyr::select(-c(X, Year.1)) %>%
+  dplyr::rename(pollock_kgkm2 = mean,
+                pollock_sd = SD)
+
+# capelin <- read.csv("VAST_Outputs/2025-07-23/Capelin/2025-07-23_Surface_Capelin_NBS_D.csv") %>% 
+#    dplyr::select(-c(X, Year.1)) %>%
+#   dplyr::rename(capelin_kgkm2 = mean,
+#                 capelin_sd = SD)
+
+NBS.sample.size <- read.csv("NBS_updated_sample_size_2025.csv") %>%
+  dplyr::select(-X) %>% dplyr::rename(n = n..)
+```
+
+## SEBS data
+```{r}
+forage_sebs <- read.csv("2025-09-19/SEBS/Forage_complex/2025-09-19_Surface_ForageComplex_SEBS_D.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
+  dplyr::rename(forage_kgkm2 = mean,
+                forage_sd = SD)
+
+herring_sebs <- read.csv("2025-09-19/SEBS/Herring/2025-09-19_Surface_Herring_SEBS_D.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
+  dplyr::rename(herring_kgkm2 = mean,
+                herring_sd = SD)
+
+pollock_sebs <- read.csv("2025-09-19/SEBS/Pollock_age0/2025-09-19_Surface_Pollock_age0_SEBS_D.csv") %>%
+  dplyr::select(-c(X, Year.1)) %>%
+  dplyr::rename(pollock_kgkm2 = mean,
+                pollock_sd = SD)
+
+SEBS.sample.size <- read.csv("Region files/SEBS_updated_sample_size_2024.csv") %>%
+  dplyr::select(-X) %>% dplyr::rename(n = n..)
+```
+
+
+```{r}
+nbs.ts <- pollock %>%
+  #left_join(herring, by = "Year") %>%
+  left_join(forage, by = "Year") %>%
+  #left_join(capelin, by = "Year") %>%
+  left_join(NBS.sample.size, by = c("Year" = "sample_year")) %>%
+  complete(Year = 2003:this.year) %>%
+  mutate(forage_se = forage_sd/sqrt(n),
+         #herring_se = herring_sd/sqrt(n),
+         pollock_se = pollock_sd/sqrt(n),
+         #capelin_se = capelin_sd/sqrt(n),
+         ) %>%
+  mutate(region = "NBS")
+
+sebs.ts <- forage_sebs %>%
+  left_join(herring_sebs, by = "Year") %>%
+  left_join(pollock_sebs, by = "Year") %>%
+  left_join(SEBS.sample.size, by = c("Year" = "sample_year")) %>%
+  complete(Year = 2003:this.year) %>%
+  mutate(forage_se = forage_sd/sqrt(n),
+         herring_se = herring_sd/sqrt(n),
+         pollock_se = pollock_sd/sqrt(n)) %>%
+  mutate(region = "SEBS")
+
+vast.ts <- full_join(nbs.ts, sebs.ts)
+```
+
+
+# Forage plot
+```{r}
+forage.plot <- ggplot(aes(x = Year, y = forage_kgkm2, group = region, 
+                          color = region), data = vast.ts) +
+  geom_point(size=2)+
+  geom_line()+
+  geom_errorbar(aes(ymin = forage_kgkm2 - forage_se, ymax = forage_kgkm2 + forage_se,
+                    group = region, color = region), width=.1, 
+                position=position_dodge(0.05)) +
+  theme_cowplot(12)+
+  ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
+  labs(title="Forage complex - Late Summer/Fall Surface Trawl Surveys", x="Year", color = "Region", cex=3)+
+  theme(legend.position = "right",
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(colour = "black", linewidth=1))+
+  #scale_y_continuous(limits = c(0, 650)) +
+  scale_color_manual(values=c('#003366','#0099CC'))+
+  #scale_color_manual(values=c('#003366','#0099CC'))+
+  geom_point(size=1)
+#grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
+
+forage.plot
+
+#ggsave(plot = forage.plot, filename = "Figures/2025/ESR_Fall_ForageIndex_Timeseries.pdf", height = 6, width = 8)
+```
+
+# pollock plot
+```{r}
+pollock.plot <- ggplot(aes(x = Year, y = pollock_kgkm2, color = region, group = region), data = vast.ts) +
+  geom_point(size=2)+
+  geom_line()+
+  geom_errorbar(aes(ymin = pollock_kgkm2 - pollock_se, ymax = pollock_kgkm2 + pollock_se,
+                    color = region), width=.1, 
+                position=position_dodge(0.05)) +
+  theme_cowplot(12)+
+  ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
+  labs(title="Age-0 Pollock - Late Summer/Fall Surface Trawl Surveys", x="Year", color = "Region", cex=3)+
+  theme(legend.position = "right",
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        title = element_text(size = 12),
+        panel.background = element_rect(colour = "black", linewidth=1))+
+  #scale_y_continuous(limits = c(0, 225)) +
+  scale_color_manual(values=c('#003366','#0099CC'))+
+  geom_point(size=1)
+#grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
+
+pollock.plot
+#ggsave("Figures/2025/ESR_Fall_Pollock_age0_Timeseries.pdf", height = 6, width = 8)
+```
+
+# Herring plot
+```{r}
+herring.plot <- ggplot(aes(x = Year, y = herring_kgkm2), data = vast.ts) +
+  geom_point(size=2)+
+  geom_line()+
+  geom_errorbar(aes(ymin = herring_kgkm2 - herring_se, ymax = herring_kgkm2 + herring_se), width=.1, 
+                position=position_dodge(0.05)) +
+  theme_cowplot(12)+
+  ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
+  labs(title="Pacific herring - Late Summer/Fall Surface Trawl Surveys", x="Year", cex=3)+
+  theme(legend.position = "right",
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(colour = "black", linewidth=1))+
+  scale_y_continuous(limits = c(0, 200)) +
+  #scale_color_manual(values=c('#003366','#0099CC'))+
+  geom_point(size=1)
+#grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
+
+herring.plot
+```
+
+# Capelin plot
+```{r}
+caplin.plot <- ggplot(aes(x = Year, y = capelin_kgkm2), data = vast.ts) +
+  geom_point(size=2)+
+  geom_line()+
+  geom_errorbar(aes(ymin = capelin_kgkm2 - capelin_se, ymax = capelin_kgkm2 + capelin_se), width=.1, 
+                position=position_dodge(0.05)) +
+  theme_cowplot(12)+
+  ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
+  labs(title="Capelin - Late Summer/Fall Surface Trawl Surveys", x="Year", cex=3)+
+  theme(legend.position = "right",
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(colour = "black", linewidth=1))+
+  #scale_y_continuous(limits = c(0, 15)) +
+  #scale_color_manual(values=c('#003366','#0099CC'))+
+  geom_point(size=1)
+#grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
+
+caplin.plot
+```
+
+
+```{r}
+# ggsave(paste0("2025-08-14/", this.year, "_Fall_Herring_timeseries.png"), herring.plot)
+# ggsave(paste0("2025-08-22/", this.year, "_Fall_Pollock_timeseries.png"), pollock.plot)
+# ggsave(paste0("2025-08-22/", this.year, "_Fall_Forage_timeseries.png"), forage.plot)
+# ggsave(paste0("2025-08-25/", this.year, "_Fall_Capelin_timeseries.png"), caplin.plot)
+```
+
+# SEBS forage plot
+```{r}
+sebs.forage.plot <- ggplot(aes(x = Year, y = forage_kgkm2), data = sebs.ts) +
+  geom_point(size=2)+
+  geom_line()+
+  geom_errorbar(aes(ymin = forage_kgkm2 - forage_se, ymax = forage_kgkm2 + forage_se), width=.1, 
+                position=position_dodge(0.05)) +
+  theme_cowplot(12)+
+  ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
+  labs(title="SEBS Forage complex - Late Summer/Fall Surface Trawl Surveys", x="Year", cex=3)+
+  theme(legend.position = "right",
+        axis.title = element_text(size = 16),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(colour = "black", linewidth=1))+
+  #scale_y_continuous(limits = c(0, 650)) +
+  #scale_color_manual(values=c('#003366','#0099CC'))+
+  geom_point(size=1)
+#grid.arrange(p,bottom="",top="",left="",nrow = 1, ncol=1)
+
+sebs.forage.plot
+```
+
