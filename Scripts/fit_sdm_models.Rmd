@@ -1,0 +1,263 @@
+---
+title: "fit_sdm_models"
+output: html_document
+date: "2026-06-25"
+editor_options: 
+  chunk_output_type: console
+---
+
+Pull in fxns
+```{r}
+source("Scripts/helper_fxns/clean_pull_data.R")
+```
+
+libraries
+```{r}
+# make sure the proper packages are install and loaded
+pkgs <- c("VAST", "sdmTMB")
+
+for (pkg in pkgs) {
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg)
+    library(pkg, character.only = TRUE)
+  } else {
+    message(paste("Package '", pkg, "' is already installed and loaded.", sep = ""))
+  }
+}
+```
+
+get data
+```{r}
+tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672, 171671)
+this.year <- 2025
+
+nbs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "NBS") %>%
+  # this pivot longer wont work if you change the tsns above 
+  pivot_longer(cols = c("Chinook Salmon_J":"Forage"), names_to = "sp_name", values_to = "catch_kg")
+
+sebs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "SEBS") %>%
+  # this pivot longer wont work if you change the tsns above 
+  pivot_longer(cols = c("Chinook Salmon_J":"Forage"), names_to = "sp_name", values_to = "catch_kg")
+
+# glimpse(nbs.ts)
+# glimpse(sebs.ts)
+
+# pull in the appropriate extrapolation grids for VAST 
+nbs_region <- readRDS("Region files/NBS_user_region.rds")
+sebs_region <- readRDS("Region files/user_region.rds")
+```
+
+custom directory fxn
+```{r}
+Date = Sys.Date()
+RunFile = DateFile = paste0(getwd(),'/',Date,'/')
+dir.create(RunFile, recursive = TRUE) # creates folder with today's date to contain the session outputs
+
+
+fit_model_to_dir<- function(d, ...){
+  fit_model(CompileDir=d, RunDir=d, working_dir=d, ...) 
+}
+                 
+
+plot_to_dir <- function(pd, ...) {
+  plot(CompileDir = pd, RunDir = pd, working_dir = pd, ...
+  )
+}
+```
+
+
+```{r}
+
+set_fit <- function(
+    Version = NULL,
+    run_fast = FALSE,
+    sp_name,
+    region,
+    obsmodel,
+    fieldconfig,
+    n_x = 500
+) {
+  
+  # basic settings / checks
+  set.seed(2026)
+   # set up to get newest version if null
+  if(is.null(Version)== T) { Version = get_latest_version( package="VAST" ) }
+  if(is.null(Version)== F) { Version = Version }
+  
+  # change knots and bias correct if running quickly
+  # (i.e. not a final model)
+   if(run_fast == TRUE){
+    use_bias_correct <- FALSE
+    n_x <- 200
+  } else {
+    use_bias_correct <- TRUE
+    n_x <- n_x
+  }
+  
+   # change user input pending region & sp name
+  if(region == "NBS"){
+    input_grid = nbs_region
+    ts <- filter(nbs.ts, sp_name == sp_name)
+    obs_model <- filter(obsmodel, sp_name == sp_name, region == region)
+    fieldconfig <- filter(fieldconfig, sp_name == sp_name, region == region)
+  } else {
+    if(region == "SEBS") {
+      input_grid <- sebs_region
+      ts <- filter(sebs.ts, sp_name == sp_name)
+      obs_model <- filter(obsmodel, sp_name == sp_name, region == region)
+      fieldconfig <- filter(fieldconfig, sp_name == sp_name, region == region)
+    }
+    message("input grid & data not supplied for region")
+  }
+  
+  ### Make Settings ###
+  settings <- make_settings(
+    Version = Version,
+    n_x = n_x,
+    Region = "User",
+    purpose = "index2", # uses gamma dist for positve catch, uses bias correction,
+    bias.correct = use_bias_correct,
+    max_cells = 2000,
+    ObsModel = obs_model,
+    FieldConfig = fieldconfig,
+    Options=c(SD_site_logdensity=TRUE, Calculate_Range = TRUE,
+                                    Calculate_effective_area = TRUE),
+    fine_scale=FALSE, # not accounting for fine scale spatial heterogeneity
+    treat_nonencounter_as_zero=TRUE,
+    knot_method='grid', # extrapolation is done with grid cells within specificed strata
+    use_anisotropy =TRUE
+  )
+  
+  ## Create new directory for output ##
+  pd <- paste0(here(), '/', Date, '/', sp_name)
+  
+  ## Fit model ##
+  fit <- fit_model_to_dir(
+    d = pd,
+    settings = settings,
+    Lat_i = ts$Lat,
+    Lon_i = ts$Lon,
+    observations_LL = ts[,c('Lat','Lon')],
+    t_i = ts$sample_year, 
+    b_i = (as_units(ts$catch_kg,'kg')), #Catch in weight at each station
+    a_i = (as_units(ts$effort,'km2')), #km^2 based on haversine distance  times trawl width 50 m.
+    getsd = TRUE,
+    test_fit = TRUE,
+    build_model = TRUE,
+    input_grid = input_grid,
+    getReportCovariance = TRUE,
+    catchability_date = data.frame(date = ts$doy)
+  )
+  
+  plot_to_dir(pd = pd,
+              fit)
+  
+}
+
+```
+
+Create vector species and configs
+```{r}
+setting_config <- tibble(
+  species = rep(c("Forage", "Capelin_All", "Pacific Herring_All", "Pollock_A0"),2),
+  region = c(rep(c("NBS"),4), rep(c("SEBS"),4)),
+  model = list(c(1,1,1,1), c(1,1,1,1), c(1,0,1,1), c(1,1,1,1), c(1,0,1,1), c(1,1,1,1), c(1,1,0,1), c(1,1,0,1)),
+  config = list(c(2, 3), c(1,3), c(2,3), c(2,3), c(2,3), c(2,3), c(2,3), c(2,3)) 
+)
+
+print(setting_config)
+```
+
+
+Try and fit and plot a model
+```{r}
+set_fit(run_fast = TRUE, 
+        sp_name = "Forage",
+        region = "NBS", 
+        obsmodel = setting_config,
+        fieldconfig = setting_config,
+        n_x = 500)
+
+```
+
+
+
+
+
+Settings & fitting VAST
+```{r}
+# species names for model runs
+species <- c("Forage", "Capelin_All", "Pacific Herring_All", "Pollock_A0")
+obsmodels1 <- c(1, 1, 1, 1)
+obsmodels2 <- c(2, 3, 2, 2)
+c(obsmodels1[1], obsmodels2[1])
+
+set_fit_VAST <- function(
+    Version = NULL
+    run_fast = FALSE,
+    data_out_dir,
+    end_yr,
+    sp_name,
+    n_x = 500,
+    region
+    ) {
+  
+  
+  set.seed(2026)
+  
+  # set up to get newest version if null
+  if(is.null(Version)== T) { Version = get_latest_version( package="VAST" ) }
+  if(is.null(Version)== F) { Version = Version }
+  
+  # change knots and bias correct if running quickly
+  # (i.e. not a final model)
+   if(run_fast == TRUE){
+    use_bias_correct <- FALSE
+    n_x <- 200
+  } else {
+    use_bias_correct <- TRUE
+    n_x <- n_x
+  }
+  
+  ## Create new directory to save results ##
+  DataFile <- paste0(data_out_dir, end_yr, "\\", sp_name, "\\")
+  dir.create(DataFile)
+  
+  # change user input pending region
+  if(region == "NBS"){
+    input_grid = nbs_region
+    ts = nbs.ts
+  } else {
+    if(region == "SEBS") {
+      input_grid = sebs_region
+      ts = sebs.ts
+    }
+    message("input grid & data not supplied for region")
+  }
+  
+  make_settings(n_x = n_x #500 final model, 200 for faster run,
+                Region = "User",
+                purpose = "index2",
+                bias_correct = use_bias_correct,
+                max_cells = 2000, 
+                #ObsModel,
+                #FieldConfig,
+                Options = c(SD_site_logdensity = TRUE, Calculate_Range = TRUE,
+                            Calculate_effective_area = TRUE),
+                treat_nonencounter_as_zero = TRUE,
+                knot_method = "grid",
+                fine_scale = FALSE,
+                use_anisotropy = TRUE)
+  
+  fit_model_to_dir(
+    d = pd,
+    settings = settings,
+    
+    
+  )
+}
+```
+
+
+
+

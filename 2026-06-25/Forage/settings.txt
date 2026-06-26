@@ -1,0 +1,85 @@
+$Version
+[1] "VAST_v14_0_1"
+
+$n_x
+[1] 200
+
+$Region
+[1] "User"
+
+$strata.limits
+     STRATA
+1 All_areas
+
+$zone
+[1] NA
+
+$FieldConfig
+# A tibble: 8 × 4
+  species             region model     config   
+  <chr>               <chr>  <list>    <list>   
+1 Forage              NBS    <dbl [4]> <dbl [2]>
+2 Capelin_All         NBS    <dbl [4]> <dbl [2]>
+3 Pacific Herring_All NBS    <dbl [4]> <dbl [2]>
+4 Pollock_A0          NBS    <dbl [4]> <dbl [2]>
+5 Forage              SEBS   <dbl [4]> <dbl [2]>
+6 Capelin_All         SEBS   <dbl [4]> <dbl [2]>
+7 Pacific Herring_All SEBS   <dbl [4]> <dbl [2]>
+8 Pollock_A0          SEBS   <dbl [4]> <dbl [2]>
+
+$RhoConfig
+   Beta1    Beta2 Epsilon1 Epsilon2 
+       0        0        0        0 
+
+$VamConfig
+Method   Rank Timing 
+     0      0      0 
+
+$OverdispersionConfig
+Eta1 Eta2 
+   0    0 
+
+$ObsModel
+# A tibble: 8 × 4
+  species             region model     config   
+  <chr>               <chr>  <list>    <list>   
+1 Forage              NBS    <dbl [4]> <dbl [2]>
+2 Capelin_All         NBS    <dbl [4]> <dbl [2]>
+3 Pacific Herring_All NBS    <dbl [4]> <dbl [2]>
+4 Pollock_A0          NBS    <dbl [4]> <dbl [2]>
+5 Forage              SEBS   <dbl [4]> <dbl [2]>
+6 Capelin_All         SEBS   <dbl [4]> <dbl [2]>
+7 Pacific Herring_All SEBS   <dbl [4]> <dbl [2]>
+8 Pollock_A0          SEBS   <dbl [4]> <dbl [2]>
+
+$vars_to_correct
+[1] "Index_cyl" "Index_ctl"
+
+$Options
+      SD_site_logdensity          Calculate_Range Calculate_effective_area 
+                    TRUE                     TRUE                     TRUE 
+
+$grid_size_km
+[1] 25
+
+$max_cells
+[1] 2000
+
+$knot_method
+[1] "grid"
+
+$Method
+[1] "Mesh"
+
+$use_anisotropy
+[1] TRUE
+
+$fine_scale
+[1] FALSE
+
+$bias.correct
+[1] FALSE
+
+$mesh_package
+[1] "INLA"
+
