@@ -37,6 +37,14 @@ pull_clean_catch <- function(this.year, tsns, region) {
   #' if you want squid - all squid species in db
   #' jellyfish includes: Aequorea sp., aurelia sp., chrysora, cyanea, sautrophora, and phacellephora
   
+  # calc median doy 
+  median.doy <- df %>%
+    group_by(station_id) %>%
+    mutate(doy = yday(haul_date)) %>%
+    summarise(mean.doy = mean(doy)) %>%
+    summarise(median.doy = median(mean.doy),
+              mean = mean(mean.doy))
+  
   data <- df %>%
     dplyr::select(-c(oceanographic_domain,
                      gear_in_time, gear_in_latitude, 
@@ -67,7 +75,9 @@ pull_clean_catch <- function(this.year, tsns, region) {
                         `Pollock_A0`, `Pacific Cod_A0`),
            Lat = eq_latitude,
            Lon = eq_longitude,
-           doy = yday(haul_date))
+           doy = yday(haul_date),
+           scale_doy = doy - median.doy$median.doy)
+  
   return(data)
 } # so in this output we could add in the appropriate field configs / obs models / families for the model settings and run
 
