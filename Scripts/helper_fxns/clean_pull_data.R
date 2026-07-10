@@ -75,8 +75,7 @@ pull_clean_catch <- function(this.year, tsns, region) {
                         `Pollock_A0`, `Pacific Cod_A0`),
            Lat = eq_latitude,
            Lon = eq_longitude,
-           doy = yday(haul_date),
-           scale_doy = doy - median.doy$median.doy)
+           doy = yday(haul_date))
   
   return(data)
 } # so in this output we could add in the appropriate field configs / obs models / families for the model settings and run

@@ -1,5 +1,7 @@
 # Ignore parameter est files
 *parameter_estimates.RData
+VAST_Outputs/
+.RDataTmp*
 
 # History files
 .Rhistory

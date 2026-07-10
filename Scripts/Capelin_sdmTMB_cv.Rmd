@@ -1,0 +1,326 @@
+---
+title: "Capelin_sdmTMB_cv"
+output: html_document
+date: "2026-07-06"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Problem: In SEBS in 2016 no capelin were caught at any stations which makes the spatiotemporal model for SEBS capelin impossible to converge. However, we can adjust the model form/input data to converge the model. 
+
+Options: 
+1. Use a time-varying random walk for year:
+
+- a time-varying random walk for year (to use information from years before/after 2016 i.e., 2014 and 2018 to inform the year intercept for 2016). Otherwise it tries to esimate an unreasonable intercept for 2016. 
+
+2. Use a reduced dataset without 2016
+
+# libraries & functions
+```{r}
+# data pull function
+source("Scripts/helper_fxns/clean_pull_data.R")
+
+# make sure the proper packages are install and loaded
+pkgs <- c("visreg", "sdmTMB", "sf", "concaveman", "cowplot", "gridExtra")
+
+for (pkg in pkgs) {
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg)
+    library(pkg, character.only = TRUE)
+  } else {
+    message(paste("Package '", pkg, "' is already installed and loaded.", sep = ""))
+  }
+}
+```
+
+# bring in data
+```{r}
+tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672, 171671) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function
+this.year <- 2025
+
+ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "SEBS") %>%
+  # this pivot longer wont work if you change the tsns above 
+  pivot_longer(cols = c("Chinook Salmon_J":"Forage"), names_to = "sp_name", values_to = "catch_kg") %>%
+  add_utm_columns(., ll_names = c("Lon", "Lat"),
+                  utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
+  mutate(region = "SEBS", 
+         crs = 32602)
+
+# get the species names in a vector, there are 31, but we're only interested in a few for the ESRs 
+species_names <- unique(ts$sp_name) 
+species_names <- species_names[species_names %in% c("Capelin_All", "Forage", "Pacific Herring_All",
+                                                   "Pollock_A0")]
+ts <- filter(ts, sp_name %in% species_names) %>%
+  filter(!(is.na(effort))) # drop any stations that have NA for effort
+
+# datalist just by the species name so includes region for both within a specis
+ts.list <- split(ts, list(ts$sp_name))
+```
+
+divide the data into just the sebs capelin dataframe
+```{r}
+ts.capelin <- filter(ts.list[["Capelin_All"]], region == "SEBS")
+ts.capelin.red <- filter(ts.capelin, sample_year != 2016) # we know that the 2016 survey encountered no capelin so it explodes the estimates
+```
+
+# set up capelin sdmtmbs
+```{r}
+mesh.sebs.red <- make_mesh(ts.capelin.red, 
+            xy_cols = c("X", "Y"),
+            n_knots = 200)
+
+mesh.sebs <- make_mes(ts.capelin, 
+                      xy_cols = c("X", "Y"), 
+                      n_knots = 200)
+
+ts.capelin.red$log_effort <- log(ts.capelin.red$effort)
+ts.capelin$log_effort <- log(ts.capelin$effort)
+ts.capelin.red$fct_year <- as.factor(ts.capelin.red$sample_year)
+
+# group data by years rather than grouping regardless of years
+fold_vector <- as.numeric(as.factor(ts.capelin$sample_year))
+fold_vector2 <- as.numeric(as.factor(ts.capelin.red$sample_year))
+# this allows for leave-one-year-out validation
+unique(ts.capelin$sample_year) # complete dataset with 2016
+unique(ts.capelin.red$sample_year) # without 2016
+```
+
+
+# capelin cv
+
+can we use cross validation to get a better idea of which modelling approach is better?
+Following this vignette: https://sdmtmb.github.io/sdmTMB/articles/cross-validation.html
+```{r}
+TMB::openmp(n = 1)
+# do cross validation four times, first with the full dataset then with the reduced dataset
+# set up paralell processing
+future::plan(future::multisession, workers = 4)
+rw_cv <- sdmTMB_cv(data = ts.capelin, # trying out using the reduced dataset for both cross validation 
+            formula = catch_kg ~ 0 + scale_doy,  # Remove the factor year
+            offset = "log_effort",
+            time_varying = ~ 1,                  # Turn on time-varying intercepts
+            time_varying_type = "rw",
+            time = "sample_year", # this needs to be an interger or numeric for random walk to function correctly. So it shouldn't be fct_year
+            # remove extra time for cv only use in full model
+            #extra_time =c(2013, 2015, 2017, 2019, 2020, 2021, 2023),
+            mesh = mesh.sebs, # if red dataset chagne to mesh.sebs.red
+            family = tweedie(link = "log"),
+            spatial = "on",
+            spatiotemporal = "iid",
+            anisotropy = TRUE,
+            fold_ids = fold_vector # if reduced change to fold_vector2
+)
+
+rw_cv_red <- sdmTMB_cv(data = ts.capelin.red, # trying out using the reduced dataset for both cross validation 
+            formula = catch_kg ~ 0 + scale_doy,  # Remove the factor year
+            offset = "log_effort",
+            time_varying = ~ 1,                  # Turn on time-varying intercepts
+            time_varying_type = "rw",
+            time = "sample_year", # this needs to be an interger or numeric for random walk to function correctly. So it shouldn't be fct_year
+            # remove extra time for cv only use in full model
+            #extra_time =c(2013, 2015, 2017, 2019, 2020, 2021, 2023),
+            mesh = mesh.sebs.red, # if red dataset chagne to mesh.sebs.red
+            family = tweedie(link = "log"),
+            spatial = "on",
+            spatiotemporal = "iid",
+            anisotropy = TRUE,
+            fold_ids = fold_vector2 # if reduced change to fold_vector2
+)
+
+
+# 
+# # Now set up your parallel structure
+# this i think sets it up to run each model sequentially?
+future::plan(future::sequential)
+# run the reduced dataset model
+rand_cv <- sdmTMB_cv(data = ts.capelin, 
+            # right now estimating each yuear as a fixed effect
+            #catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            # include a random effect for year
+            catch_kg ~ 0 + scale_doy + (1 | fct_year),
+            offset = "log_effort",
+            time = "sample_year",
+            mesh = mesh.sebs, 
+            spatiotemporal = "iid",
+            spatial = "on",
+            family = tweedie(link = "log"),
+            share_range = TRUE, # default for sdmTMB
+            anisotropy = TRUE,
+            fold_ids = fold_vector # change from fold vector to fold vector2 for red fdf
+)
+
+rand_cv_red <- sdmTMB_cv(data = ts.capelin.red, 
+            # right now estimating each yuear as a fixed effect
+            #catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            # include a random effect for year
+            catch_kg ~ 0 + scale_doy + (1 | fct_year),
+            offset = "log_effort",
+            time = "sample_year",
+            mesh = mesh.sebs.red, 
+            spatiotemporal = "iid",
+            spatial = "on",
+            family = tweedie(link = "log"),
+            share_range = TRUE, # default for sdmTMB
+            anisotropy = TRUE,
+            fold_ids = fold_vector2 # change from fold vector to fold vector2 for red fdf
+)
+
+
+rw_cv$sum_loglik # full dataset: -50205.22 # red df -53677.4
+rw_cv_red$sum_loglik
+rand_cv$sum_loglik # full dataset: -34874.86 # red df -35652.5, closer to 0 so better.
+#red_cv$sum_loglik #(outputs -9.36e-21, -1.511e-20)
+rand_cv_red$sum_loglik
+
+# mean log likelihoods
+mean_loglike_rw <- rw_cv$sum_loglik / nrow(rw_cv$data) # full df -51.177, reduced df -56.741
+mean_loglike_rand <- red_cv$sum_loglik / nrow(red_cv$data) # -35.55032, reduced df -37.68
+
+# RMSE across entire dataset:
+sqrt(mean((rw_cv$data$catch_kg - rw_cv$data$cv_predicted)^2)) #full df 24.87; reduced df 27.929
+sqrt(mean((rw_cv_red$data$catch_kg - rw_cv_red$data$cv_predicted)^2)) 
+sqrt(mean((rand_cv$data$catch_kg - rand_cv$data$cv_predicted)^2)) #25.7013 # reduced df 26.021
+sqrt(mean((rand_cv_red$data$catch_kg - rand_cv_red$data$cv_predicted)^2)) 
+
+# ggplot() +
+#   geom_point(aes(x = rw_cv$data$catch_kg, rw_cv$data$cv_predicted))
+
+# RMSE by fold
+rmse_cv_rw <- dplyr::group_by(rw_cv$data, cv_fold) |> 
+  dplyr::summarize(
+    mae = mean(abs(catch_kg - cv_predicted)),
+    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
+rmse_cv_rw_red <- dplyr::group_by(rw_cv_red$data, cv_fold) |> 
+  dplyr::summarize(
+    mae = mean(abs(catch_kg - cv_predicted)),
+    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
+
+# for random effects model
+rmse_cv_rand <- dplyr::group_by(rand_cv$data, cv_fold) |> 
+  dplyr::summarize(
+    mae = mean(abs(catch_kg - cv_predicted)),
+    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
+rmse_cv_rand_red <- dplyr::group_by(rand_cv_red$data, cv_fold) |> 
+  dplyr::summarize(
+    mae = mean(abs(catch_kg - cv_predicted)),
+    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
+
+ggplot() +
+  geom_line(aes(x = cv_fold, rmse), data = rmse_cv_rw, col = "red") +
+  geom_line(aes(x = cv_fold, rmse), data = rmse_cv_rand, col = "blue")
+
+# reduced dataset
+ggplot() +
+  geom_line(aes(x = cv_fold, rmse), data = rmse_cv_rw_red, col = "red") +
+  geom_line(aes(x = cv_fold, rmse), data = rmse_cv_rand_red, col = "blue")
+```
+
+looks like overall the reduced random effects (which we'll treat as fixed effect in the final model) performs better than the random walk
+so we'll refit both the random walk with all data and the reduced fixed effect model just to compare how the indicies perform. 
+
+## set up final models
+```{r}
+# read in old mesh 
+mesh.sebs <- make_mesh(ts.capelin,
+                       xy_cols = c("X", "Y"),
+                       n_knots = 200)
+mesh.sebs.red <- make_mesh(ts.capelin.red, 
+            xy_cols = c("X", "Y"),
+            n_knots = 200)
+```
+
+```{r}
+## fit model with random walk 
+sebs.capelin.fit.rw <- sdmTMB(data = ts.capelin, # trying out using the reduced dataset for both cross validation 
+            formula = catch_kg ~ 0 + scale_doy,  # Remove the factor year
+            offset = ts.capelin$log_effort,
+            time_varying = ~ 1,                  # Turn on time-varying intercepts
+            time_varying_type = "rw",
+            time = "sample_year", # this needs to be an interger or numeric for random walk to function correctly.
+            extra_time =c(2013, 2015, 2017, 2019, 2020, 2021, 2023),
+            mesh = mesh.sebs, 
+            family = tweedie(link = "log"),
+            spatial = "on",
+            spatiotemporal = "iid",
+            anisotropy = TRUE)
+
+
+## fit model without 2016 
+sebs.capelin.fit.red <- sdmTMB(data = ts.capelin.red, 
+            # right now estimating each yuear as a fixed effect
+            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            offset = ts.capelin.red$log_effort,
+            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
+            time = "sample_year",
+            mesh = mesh.sebs.red, 
+            spatiotemporal = "iid",
+            spatial = "on",
+            family = tweedie(link = "log"),
+            share_range = TRUE, # default for sdmTMB
+            # for the bering sea anisotropy important given the patterns across the shelf. 
+            anisotropy = TRUE)
+
+sanity(sebs.capelin.fit.red)
+sanity(sebs.capelin.fit.rw)
+tidy(sebs.capelin.fit.red, effects = "fixed") 
+```
+## prediction grids
+read in the one created for the full dataset
+
+```{r}
+# read in full df prediction grid
+sebs.grid <- read.csv("Results/2026_ESR/SEBS_prediction-grid.csv")
+
+# create grid for reduced dataset
+capelin.sf <- ts.capelin.red %>%
+      dplyr::select(c(X, Y, eq_latitude, eq_longitude)) %>%
+      mutate(X = X*1000, Y = Y*1000) %>% # convert to meters for the crs conversion
+      st_as_sf(coords = c("X", "Y"), crs = unique(ts.capelin.red$crs))
+    
+convex_hull <- concaveman(capelin.sf, concavity = 3)
+convex_buff <- st_buffer(convex_hull, dist = 15e3)
+grid <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
+  st_intersection(convex_buff)
+
+# create spatial grid
+bs.grid <- do.call(rbind, st_geometry(grid)) %>%
+  as.tibble() %>% setNames(c("X", "Y")) %>%
+  # convert df m back to km
+  mutate(X = X/1e3, Y = Y/1e3)
+# replicate the grid across years (always in model)
+bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts.capelin.red$sample_year))
+# assuming we have scale_doy in model (which we should) replicate with the scaled doy
+# to predict on the median value of the survey
+bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
+```
+
+# predict indicies
+```{r}
+pred.capelin.rw <- predict(sebs.capelin.fit.rw, newdata = sebs.grid, return_tmb_object = T)
+pred.capelin.red <- predict(sebs.capelin.fit.red, newdata = bs.grid.doy, return_tmb_object = T)
+
+capelin.index.rw <- get_index(pred.capelin2, bias_correct = TRUE)
+capelin.index.red <- get_index(pred.capelin, bias_correct = TRUE)
+```
+
+
+compare the two capelin indicies
+```{r}
+capelin.index.rw$model_type <- "random_walk"
+capelin.index.red %>%
+  mutate(model_type = "reduced_model") %>%
+  rbind(capelin.index.rw) %>%
+  ggplot() +
+  geom_pointrange(aes(x = sample_year, y = est, 
+                      ymin = lwr, ymax = upr,
+                      color = model_type))
+
+# in general the random walk model provides an estimate for 2016 (which is 0) but pushes the estimes around the peak capelin years up and reduces the variability given the extra information that contributing to the estimate (years before/after).
+#' the reduced model has larger ci for the years where capelin peaked because of how intermittant they were encounterd. High encounter rate or none at all. boom/bust situation. 
+#' Overall based on the cross validation it is slightly better to use the reduced model over the random wlak. 
+```
+

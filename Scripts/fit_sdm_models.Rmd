@@ -14,7 +14,8 @@ source("Scripts/helper_fxns/clean_pull_data.R")
 # libraries
 ```{r}
 # make sure the proper packages are install and loaded
-pkgs <- c("visreg", "sdmTMB", "sf", "concaveman", "cowplot", "gridExtra")
+pkgs <- c("visreg", "sdmTMB", "sf", "concaveman", "cowplot", "gridExtra", "patchwork",
+          "lubridate", "here")
 
 for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) {
@@ -59,8 +60,20 @@ species_names <- species_names[species_names %in% c("Capelin_All", "Forage", "Pa
 ts <- filter(ts, sp_name %in% species_names) %>%
   filter(!(is.na(effort))) # drop any stations that have NA for effort
 
+ts <- mutate(ts, log_effort = log(effort)) %>%
+  group_by(region, sp_name) %>%
+  mutate(median_doy = median(doy),
+         scale_doy = doy - median_doy,
+         mean_doy = mean(doy),
+         sd_doy = sd(doy),
+         scale_doy2 = (doy - mean_doy)/sd_doy,
+         scaled_median = (median_doy - mean_doy) / sd_doy)
+
+ts.red <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All" & sample_year == 2016))
+#write.csv(ts.red, here("Results", paste0(year(Sys.Date()), "_ESR"), paste0("nbs_sebs_timeseries"))
+
 # datalist just by the species name so includes region for both within a specis
-ts.list <- split(ts, list(ts$sp_name))
+ts.list <- split(ts.red, list(ts.red$sp_name))
 
 ```
 
@@ -97,25 +110,13 @@ table(herring$catch_kg >0, herring$sample_year, herring$region)
 #' Capelin, high zero encounters probably delta_lognormal
 #' Herring probably can use a delta-gamma or delta_lognormal. 
 
-```
-
-testing variables
-```{r}
-# sp_name <- "Forage"
-# survey_region <- "NBS"
-# run_fast <- TRUE
-# n_x <- 200
-# family = tweedie(link = "log")
-# #family = delta_gamma(link1 = "logit", link2 = "log")
-# spatial = "off"
-# spatiotemporal = "iid"
-# #spatial = list("off", "on") # on, on is equivalent (with spatiotemporal arg) to Fieldconfig 1,1,1,1
-# #spatiotemporal = list("off", "iid")
-# data = ts.list
+print(pol %>% filter(region == "NBS",
+               catch_kg > 0) %>%
+  count(sample_year), n = 21)
 ```
 
 
-# sdmTMB
+# sdmTMB wrapper fxn
 ```{r}
 # this function fits a sdmTMB model that has offset log effort and a model structure of f-year and s-scale.doy
 # this has indepedent year effects
@@ -125,10 +126,7 @@ set_fit_TMB <- function(
     sp_name,
     run_fast = FALSE,
     n_x = 200,
-    spatiotemporal = "IID",
-    spatial = "on",
-    family = tweedie(link = "log")
-) {
+    ...) {
   
   set.seed(2026)
   
@@ -156,52 +154,37 @@ set_fit_TMB <- function(
   
   # change data pending region & sp name
   if(survey_region == "NBS"){
-    ts.tmp <- ts.list[[sp_name]]
+    ts.tmp <- data[[sp_name]]
     ts <- filter(ts.tmp, region == survey_region) %>%
       as.data.frame()
   } else {
     if(survey_region == "SEBS") {
-      ts.tmp <- ts.list[[sp_name]]
+      ts.tmp <- data[[sp_name]]
     ts <- filter(ts.tmp, region == survey_region) %>%
       as.data.frame()
     } else {stop("data not supplied for region")}
     
   }
   
-  # print out median doy for *knowledge*
-  ts.doy <- ts %>%
-    group_by(station_id) %>%
-    mutate(doy = yday(haul_date)) %>%
-    summarise(mean.doy = mean(doy)) %>%
-    summarise(median.doy = median(mean.doy),
-              mean = mean(mean.doy))
+  # # print out median doy for *knowledge*
+  ts_median <- unique(ts$median_doy)
+  ts_scaled_median <- unique(ts$scaled_median)
   
-  print(paste(survey_region, sp_name, "median doy", ts.doy$median.doy))
+  print(paste(survey_region, sp_name, "median doy", ts_median))
   
   ## create mesh
   mesh <- make_mesh(ts, 
             xy_cols = c("X", "Y"),
             n_knots = n_x)
-  
-  ## set up the effort offset 
-  ts$log_effort <- log(ts$effort)
 
   ## fit model 
-  fit <- sdmTMB(data = ts, 
-                # right now estimating each yuear as a fixed effect
-                catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
-                offset = ts$log_effort,
-                # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
-                time = "sample_year",
-                mesh = mesh, 
-                spatiotemporal = spatiotemporal,
-                spatial = spatial,
-                family = family,
-                share_range = TRUE, # default for sdmTMB
-                # for the bering sea anisotropy important given the patterns across the shelf. 
-                anisotropy = TRUE)
+  fit <- sdmTMB(data = ts,
+                mesh = mesh, ...)
 
   print(sanity(fit))
+  
+  mod_fam <- fit$family$family
+  fam_label <- paste(mod_fam, collapse = "_")
   
   # pulled from lauren's code
   # is the model fit?
@@ -210,7 +193,9 @@ set_fit_TMB <- function(
     
   } else {
     # otherwise, check to make sure the sanity checks are met
-    if(sanity(fit)$all_ok == FALSE) fit <- try(run_extra_optimization(fit)) }
+    if(sanity(fit)$all_ok == FALSE) fit <- try(run_extra_optimization(fit, nlminb_loops = 2, 
+                                                                      newton_loops = 1)) }# close loop
+  
   # after that, check to see if the
   if(inherits(fit, "try-error")) {
     print(paste("model error for species", sp_name, "in region", survey_region)) }
@@ -218,40 +203,98 @@ set_fit_TMB <- function(
     # if the model doesn't have any sanity issues or model issues then... 
     
     # save model object
-    saveRDS(fit, file = paste0(here(path, sp_name), "_fit.RDS"))
+    saveRDS(fit, file = paste0(here(path, sp_name), fam_label, "_fit.RDS"))
     
     # look to see if there is a prediction grid already in this years ESR folder
-    if(file.exists(here("Results", paste0(year, "_ESR"),
-                                       paste0(survey_region, "_prediction-grid.csv")))) {
-      print(paste("prediction grid for", survey_region, "already exists"))
-    } else {
-      # create prediction grids for this model
-    # take the data input, convert to sf 
-    ts.sf <- ts %>%
-      dplyr::select(c(X, Y, eq_latitude, eq_longitude)) %>%
-      mutate(X = X*1000, Y = Y*1000) %>% # convert to meters for the crs conversion
-      st_as_sf(coords = c("X", "Y"), crs = unique(ts$crs))
-    
-    convex_hull <- concaveman(ts.sf, concavity = 3)
-    convex_buff <- st_buffer(convex_hull, dist = 15e3)
-    grid <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
-      st_intersection(convex_buff)
-    
-    # create spatial grid
-    bs.grid <- do.call(rbind, st_geometry(grid)) %>%
-      as.tibble() %>% setNames(c("X", "Y")) %>%
-      # convert df m back to km
-      mutate(X = X/1e3, Y = Y/1e3)
-    # replicate the grid across years (always in model)
-    bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts$sample_year))
-    # assuming we have scale_doy in model (which we should) replicate with the scaled doy
-    # to predict on the median value of the survey
-    bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
-    
-    write.csv(bs.grid.doy, file = here("Results", paste0(year, "_ESR"),
-                                       paste0(survey_region, "_prediction-grid.csv")),
-              row.names = FALSE)
-    } # close prediction grid if else creation
+    # Add a wrapper if statement if its the capelin prediction grid 
+    if(sp_name == "Capelin_All" & survey_region == "SEBS") {
+      # check to see if there's a capelin prediction grid
+      if(file.exists(here("Results", paste0(year, "_ESR"),
+                     paste0(survey_region, "_Capelin_All", "_prediction-grid.csv")))) {
+         print(paste("prediction grid for", survey_region, sp_name, "already exists"))
+      } else {
+        # create sebs capelin prediction grid
+        ts.sf <- ts %>%
+        dplyr::select(c(X, Y, eq_latitude, eq_longitude)) %>%
+        mutate(X = X*1000, Y = Y*1000) %>% # convert to meters for the crs conversion
+        st_as_sf(coords = c("X", "Y"), crs = unique(ts$crs))
+      
+        convex_hull <- concaveman(ts.sf, concavity = 3)
+        convex_buff <- st_buffer(convex_hull, dist = 15e3)
+        grid <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
+          st_intersection(convex_buff)
+        
+        # create spatial grid
+        bs.grid <- do.call(rbind, st_geometry(grid)) %>%
+          as.tibble() %>% setNames(c("X", "Y")) %>%
+          # convert df m back to km
+          mutate(X = X/1e3, Y = Y/1e3)
+        # replicate the grid across years (always in model)
+        bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts$sample_year))
+        # assuming we have scale_doy in model (which we should) replicate with the scaled doy
+        # to predict on the median value of the survey
+        
+        # need to insert an if else in case you're using scale_doy2 versus median scaled
+        # if there's any value matching scale_doy2 in the formula then we need to replicate_df
+        # based on that value not scale_doy
+        if(any(str_detect(as.character(fit$formula[[1]]), "scale_doy2")) == TRUE) {
+          # if true use scale_doy2
+          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy2", ts_scaled_median)
+        } else {
+          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
+        }
+        
+      
+        write.csv(bs.grid.doy, file = here("Results", paste0(year, "_ESR"),
+                       paste0(survey_region, "_Capelin_All", "_prediction-grid.csv")),
+                  row.names = FALSE)
+
+      } # close capelin prediction grid creation 
+    } else { 
+      
+      # if the sp_name is not capelin then... 
+      if(file.exists(here("Results", paste0(year, "_ESR"),
+                                         paste0(survey_region, "_prediction-grid.csv")))) {
+        print(paste("prediction grid for", survey_region, "already exists"))
+      } else {
+        # create prediction grids for this model
+      # take the data input, convert to sf 
+      ts.sf <- ts %>%
+        dplyr::select(c(X, Y, eq_latitude, eq_longitude)) %>%
+        mutate(X = X*1000, Y = Y*1000) %>% # convert to meters for the crs conversion
+        st_as_sf(coords = c("X", "Y"), crs = unique(ts$crs))
+      
+      convex_hull <- concaveman(ts.sf, concavity = 3)
+      convex_buff <- st_buffer(convex_hull, dist = 15e3)
+      grid <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
+        st_intersection(convex_buff)
+      
+      # create spatial grid
+      bs.grid <- do.call(rbind, st_geometry(grid)) %>%
+        as.tibble() %>% setNames(c("X", "Y")) %>%
+        # convert df m back to km
+        mutate(X = X/1e3, Y = Y/1e3)
+      # replicate the grid across years (always in model)
+      bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts$sample_year))
+      # assuming we have scale_doy in model (which we should) replicate with the scaled doy
+      # to predict on the median value of the survey
+      # need to insert an if else in case you're using scale_doy2 versus median scaled
+        # if there's any value matching scale_doy2 in the formula then we need to replicate_df
+        # based on that value not scale_doy
+        if(any(str_detect(as.character(fit$formula[[1]]), "scale_doy2")) == TRUE) {
+          # if true use scale_doy2
+          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy2", ts_scaled_median)
+        } else {
+          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
+        }
+      
+      write.csv(bs.grid.doy, file = here("Results", paste0(year, "_ESR"),
+                                         paste0(survey_region, "_prediction-grid.csv")),
+                row.names = FALSE)
+      } # close prediction grid if else creation
+    } # close the else of if spname == capelin
+      
+  
     
     
     
@@ -266,183 +309,300 @@ set_fit_TMB <- function(
 
 ```
 
-
+## fit sdmTMB models
 ```{r eval=FALSE, include=FALSE}
 # ObsModel 2,3 -> family = delta_gamma(link1 = "logit", link2 = "log")?
 # FieldConfig, first two elements are the spatial/spatiotemporal structure for the presence / absence part of the model. The second two elements are the spatial/spatiotemporal structure for the encounter model. 
 
 # other considerations, share_range in sdmTMB
 # scale / range parameters are independently estimated for each random field but sdmTMB shares it (with share_range = T)
-
-nbs.forage.fit <- set_fit_TMB(data = ts.list, 
+TMB::openmp(n = 8) # can use parallel::detectCores to see how many cores available.
+nbs.forage.fit <- set_fit_TMB(
+                           # wrapper arguments
+                           data = ts.list, 
                            survey_region = "NBS", 
                            sp_name = "Forage", 
-                           run_fast = FALSE, 
+                           run_fast = FALSE,
+                           n_x = 200,
+                           
+                           # sdmtmb arguments
+                           formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                           offset = "log_effort",
+                           time = "sample_year",
                            family = tweedie(link = "log"),
                            spatial = "on",
                            spatiotemporal = "iid",
-                           n_x = 200)
+                           share_range = TRUE,
+                           anisotropy = TRUE
+                           )
 
-nbs.pollock.fit <- set_fit_TMB(data = ts.list, 
+nbs.pollock.fit <- set_fit_TMB(
+                          # wrapper arguments
+                           data = ts.list, 
                            survey_region = "NBS", 
                            sp_name = "Pollock_A0", 
-                           run_fast = FALSE, 
-                           family = tweedie(link = "log"),
-                           spatial = "on",
-                           spatiotemporal = "iid",
-                           n_x = 200)
+                           run_fast = FALSE,
+                           n_x = 200,
+                           
+                           formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                           time = "sample_year",
+                           offset = "log_effort",
+                           family = delta_gamma(link1 = "logit", link2 = "log"),
+                           spatial = list("on", "on"),
+                           spatiotemporal = list("iid", "iid"),
+                           share_range = TRUE,
+                           anisotropy = TRUE
+                           )
 
 nbs.herring.fit <- set_fit_TMB(data = ts.list,
                                 survey_region = "NBS",
                                 sp_name = "Pacific Herring_All",
                                 run_fast = FALSE,
-                                family = delta_gamma(link1 = "logit", link2 = "log"),
-                                # spatial = list(on, on) is equivalent to FieldConfig (1, X, 1, X)
-                                spatial = list("on", "on"),
-                                # list(iid, iid) equivalent to FieldConfig (X, 1, X, 1)
-                                spatiotemporal = list("off", "iid"), 
-                                n_x = 200) # fieldconfig (1,0,1,1)
+                                n_x = 200,
+                               
+                                # sdmtmb arguments
+                                formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                                time = "sample_year",
+                                offset = "log_effort",
+                               family = tweedie(link = "log"),
+                               spatial = "on",
+                               spatiotemporal = "iid",
+                                # family = delta_lognormal(link1 = "logit", link2 = "log"),
+                                # spatial = list("on", "on"),
+                                # #spatiotemporal = list("off", "off"), # meets sanity
+                                # spatiotemporal = list("iid", "iid"),
+                                share_range = TRUE,
+                                anisotropy = TRUE
+                                ) 
 
-nbs.capelin.fit <- set_fit_TMB(data = ts.list,
-                                survey_region = "NBS",
-                                sp_name = "Capelin_All",
-                                run_fast = FALSE,
-                                family = delta_gamma(link1 = "logit", link2 = "log"),
-                                # spatial = list(on, on) is equivalent to FieldConfig (1, X, 1, X)
-                                spatial = list("on", "on"),
-                                # list(iid, iid) equivalent to FieldConfig (X, 1, X, 1)
-                                spatiotemporal = list("iid", "iid"), 
-                                n_x = 200) # fieldconfig (1,0,1,1)
+nbs.capelin.fit <- set_fit_TMB(data = ts.list, 
+                           survey_region = "NBS", 
+                           sp_name = "Capelin_All", 
+                           run_fast = FALSE,
+                           n_x = 200,
+                           
+                           formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                           time = "sample_year",
+                           offset = "log_effort",
+                           family = tweedie(link = "log"),
+                           spatial = "on",
+                           spatiotemporal = "iid",
+                           share_range = TRUE,
+                           anisotropy = TRUE
+                           ) 
 
 sebs.forage.fit <- set_fit_TMB(data = ts.list, 
                            survey_region = "SEBS", 
                            sp_name = "Forage", 
-                           run_fast = FALSE, 
+                           run_fast = FALSE,
+                           n_x = 100,
+                           
+                           formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                           time = "sample_year",
+                           offset = "log_effort",
                            family = tweedie(link = "log"),
                            spatial = "on",
                            spatiotemporal = "iid",
-                           n_x = 200)
+                           share_range = TRUE,
+                           anisotropy = TRUE
+                           )
 
 sebs.pollock.fit <- set_fit_TMB(data = ts.list, 
                            survey_region = "SEBS", 
                            sp_name = "Pollock_A0", 
-                           run_fast = FALSE, 
+                           run_fast = FALSE,
+                           n_x = 100,
+                           
+                           formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                           time = "sample_year",
+                           offset = "log_effort",
                            family = tweedie(link = "log"),
                            spatial = "on",
                            spatiotemporal = "iid",
-                           n_x = 200)
+                           share_range = TRUE,
+                           anisotropy = TRUE
+                           )
 
-# takes awhile to run
-sebs.herring.fit <- set_fit_TMB(data = ts.list,
-                                survey_region = "SEBS",
-                                sp_name = "Pacific Herring_All",
-                                run_fast = FALSE,
-                                # equivalent to ObsModel = c(2,3)
-                                family = delta_gamma(link1 = "logit", link2 = "log"),
-                                # spatial = list(on, on) is equivalent to FieldConfig (1, X, 1, X)
-                                spatial = list("on", "off"),
-                                # equivalent to FieldConfig (X, 1, X, 1)
-                                spatiotemporal = list("iid", "iid"), 
-                                n_x = 200) # with spatial on, off and iid iid its = 1,1,0,1
-
-# this  model doesn't converge it requires more sophisticated adjustments to the model form
-# sebs.capelin.fit <- set_fit_TMB(data = map2(ts.list, names(ts.list), ~ filter(.x, sample_year != 2016)),
-#                                 # above we remove 2016 from the list (all sp)
-#                                 survey_region = "SEBS",
-#                                 sp_name = "Capelin_All",
-#                                 run_fast = FALSE,
-#                                 family = tweedie(link = "log"),
-#                                 # spatial = list(on, on) is equivalent to FieldConfig (1, X, 1, X)
-#                                 spatial = "on",
-#                                 # list(iid, iid) equivalent to FieldConfig (X, 1, X, 1)
-#                                 spatiotemporal = "off",
-#                                 n_x = 200) #
-
-
-```
-
-specifically for capelin in sebs we're looking at the extreme outliers or zero inflation
-```{r}
-# instead of using my function that has consistent model structure we're going to refit it here with a random walk for years and compare it with removing the year all together
-
-ts.capelin <- filter(ts.list[["Capelin_All"]], region == "SEBS")
-ts.capelin.red <- filter(ts.capelin, sample_year != 2016) # we know that the 2016 survey encountered no capelin so it explodes the estimates
-
-mesh.sebs.red <- make_mesh(ts.capelin.red, 
-            xy_cols = c("X", "Y"),
-            n_knots = 200)
-
-mesh.sebs <- make_mesh(ts.capelin, 
-            xy_cols = c("X", "Y"),
-            n_knots = 200)
-
-ts.capelin.red$log_effort <- log(ts.capelin.red$effort)
-ts.capelin$log_effort <- log(ts.capelin$effort)
-ts.capelin$fct_year <- as.factor(ts.capelin$sample_year)
+sebs.herring.fit <- set_fit_TMB(data = ts.list, 
+                           survey_region = "SEBS", 
+                           sp_name = "Pacific Herring_All", 
+                           run_fast = FALSE,
+                           n_x = 100,
+                           
+                           formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                           time = "sample_year",
+                           offset = "log_effort",
+                           family = tweedie(link = "log"),
+                           spatial = "on",
+                           spatiotemporal = "iid",
+                           share_range = TRUE,
+                           anisotropy = TRUE
+                           )
 
 ## fit model without 2016 
-sebs.capelin.fit.red <- sdmTMB(data = ts.capelin.red, 
-            # right now estimating each yuear as a fixed effect
-            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
-            offset = ts.capelin.red$log_effort,
-            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
-            time = "sample_year",
-            mesh = mesh.sebs.red, 
-            spatiotemporal = "iid",
-            spatial = "on",
-            family = tweedie(link = "log"),
-            share_range = TRUE, # default for sdmTMB
-            # for the bering sea anisotropy important given the patterns across the shelf. 
-            anisotropy = TRUE)
+sebs.capelin.fit.red <- set_fit_TMB(data = ts.list, 
+                           survey_region = "SEBS", 
+                           sp_name = "Capelin_All", 
+                           run_fast = FALSE,
+                           n_x = 100,
+                           
+                           formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                           time = "sample_year",
+                           offset = "log_effort",
+                           spatial = list("on","off"),
+                           spatiotemporal = list("iid", "iid"),
+                           family = delta_gamma(link1 = "logit", link2 = "log"),
+                           share_range = TRUE,  
+                           anisotropy = TRUE
+                                )
 
-sanity(sebs.capelin.fit.red)
-tidy(sebs.capelin.fit.red, effects = "fixed") # estimates and standard errors look a lot better
-
-# fit model with a time varying random walk
-sebs.capelin.fit2 <- sdmTMB(
-            data = ts.capelin,
-            formula = catch_kg ~ 0 + scale_doy,  # Remove the factor year
-            offset = ts.capelin$log_effort,
-            time_varying = ~ 1,                  # Turn on time-varying intercepts
-            time_varying_type = "rw",
-            time = "sample_year",
-            extra_time =c(2013, 2015, 2017, 2019, 2020, 2021, 2023),
-            mesh = mesh.sebs,
-            family = tweedie(link = "log"),
-            spatial = "on",
-            spatiotemporal = "off",
-            anisotropy = TRUE)
-
-sanity(sebs.capelin.fit2)
-tidy(sebs.capelin.fit2)
-
-# AIC doesn't make sense because there are different underpinning data for the models
-AIC(sebs.capelin.fit.red)
-AIC(sebs.capelin.fit2)
+TMB::openmp(n = 1)  # goes back to only one cores
 ```
 
-have to recreate the prediction grid 
+## load other models (optional)
+read in models if you've already run them but want to evaluate or look at the model objects
+
+```{r eval=FALSE, include=FALSE}
+run_date <- "2026-07-09"
+
+# need to add in family of final model you want to pull in
+
+# nbs.forage.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Forage_NBS",
+#                                run_date, "Foragetweedie_fit.RDS"))
+# nbs.pollock.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pollock_A0_NBS",
+#                                run_date, "Pollock_A0binomial_Gamma.RDS"))
+# nbs.herring.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Herring_All_NBS",
+#                                run_date, "Pacific Herring_Alltweedie_fit.RDS"))
+# nbs.capelin.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_NBS",
+#                                run_date, "Capelin_Alltweedie_fit.RDS"))
+# 
+# sebs.forage.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Forage_SEBS",
+#                                run_date, "Foragetweedie_fit.RDS"))
+# sebs.pollock.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pollock_A0_SEBS",
+#                                run_date, "Pollock_A0tweedie_fit.RDS"))
+# sebs.herring.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Herring_All_SEBS",
+#                                run_date, "Pacific Herring_Alltweedie_fit.RDS"))
+# sebs.capelin.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_SEBS",
+#                                run_date, "Capelin_Allbinomial_Gamma_fit.RDS"))
+
+```
+
+
+## model evaluation
+From the model fitting object the sanity check has already been done, but here
+we'll review the diffferent spatial and randomized quantiles
 ```{r}
-capelin.sf <- ts.capelin.red %>%
-      dplyr::select(c(X, Y, eq_latitude, eq_longitude)) %>%
-      mutate(X = X*1000, Y = Y*1000) %>% # convert to meters for the crs conversion
-      st_as_sf(coords = c("X", "Y"), crs = unique(ts.capelin.red$crs))
-    
-    convex_hull <- concaveman(capelin.sf, concavity = 3)
-    convex_buff <- st_buffer(convex_hull, dist = 15e3)
-    grid <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
-      st_intersection(convex_buff)
-    
-    # create spatial grid
-    bs.grid <- do.call(rbind, st_geometry(grid)) %>%
-      as.tibble() %>% setNames(c("X", "Y")) %>%
-      # convert df m back to km
-      mutate(X = X/1e3, Y = Y/1e3)
-    # replicate the grid across years (always in model)
-    bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts.capelin.red$sample_year))
-    # assuming we have scale_doy in model (which we should) replicate with the scaled doy
-    # to predict on the median value of the survey
-    bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
+# model list: 
+model.list <- list(nbs.forage.fit, nbs.pollock.fit, nbs.herring.fit, nbs.capelin.fit,
+                   sebs.forage.fit, sebs.pollock.fit, sebs.herring.fit, sebs.capelin.fit.red)
+names(model.list) <- c("nbs.forage", "nbs.pollock", "nbs.herring", "nbs.capelin",
+                       "sebs.forage", "sebs.pollock", "sebs.herring", "sebs.capelin")
+```
+
+
+this takes longer to run since i'm simulating 500 times to then extract dharma residuals.
+```{r}
+capelin.only <- filter(ts, region == "SEBS" & sp_name == "Capelin_All") %>%
+  filter(sample_year != 2016)
+everything.else <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All"))
+
+# create two seperate lists 
+ts.list.region <- split(everything.else, list(everything.else$sp_name, everything.else$region))
+ts.list.region$Capelin_All.SEBS <- capelin.only
+
+names(ts.list.region) <- c("nbs.capelin","nbs.forage", "nbs.herring", "nbs.pollock",
+                           "sebs.capelin", "sebs.forage", "sebs.herring", "sebs.pollock")
+# testing value
+#name <- "nbs.capelin.fit"
+# create empty plot list
+residual.plots <- list()
+spatial.plots <- list()
+residual.df <- list()
+
+
+for(name in names(model.list)) {
+  mod <- model.list[[name]]
+  df <- ts.list.region[[name]]
+  
+  # get model names
+  mod_fam <- mod$family$family
+  fam_label <- paste(mod_fam, collapse = "_")
+  
+  # extract residuals
+  sims <- simulate(mod, nsim = 500, type = "mle-mvn")
+  resid <- dharma_residuals(sims, mod, return_DHARMa = TRUE)
+  
+  # set up saving the plot
+  png(filename = here("Results", paste0(year(Sys.Date()), "_ESR"), 
+                      paste0(unique(df$sp_name),"_", unique(df$region)),
+                           run_date, paste0(unique(df$sp_name), fam_label, "_resid_plot.png")))
+  plot(resid, title = paste(name, fam_label))
+  dev.off()
+  # record the plot to put in a list
+  residual.plot <- recordPlot()
+  plot.new()
+  residual.plots[[name]] <- residual.plot
+  
+  
+  
+  # put the residuals in a df for spatial plotting
+  df$resid <- resid$scaledResiduals
+  
+  
+  # create spatial plot
+  spatials <- ggplot(df) +
+    geom_point(aes(X,Y, col = resid)) +
+    labs(title = paste(name, fam_label)) +
+    scale_colour_gradient2() +
+    facet_wrap(~sample_year) +
+    coord_fixed()
+  
+  # save plot
+  ggsave(filename = here("Results", paste0(year(Sys.Date()), "_ESR"), paste0(unique(df$sp_name), "_",
+                                                                               unique(df$region)),
+                           run_date, paste0(unique(df$sp_name), fam_label, "_spatial_resid.png")),
+         plot = spatials)
+  
+  # put into list to look at
+  spatial.plots[[name]] <- spatials
+  
+
+
+  print(name)
+  residual.df[[name]] <- df
+  
+}
+```
+
+#### review residual plots
+review the residual plots and spatial plots for each fitted object
+```{r}
+residual.plots[[1]] 
+sanity(nbs.forage.fit)
+print(tidy(nbs.forage.fit, effects = "fixed"), n = 22) # pretty good
+tidy(nbs.forage.fit, effects = "ran_pars")
+residual.plots[[2]]
+sanity(nbs.pollock.fit)
+print(tidy(nbs.pollock.fit, effects = "fixed"), n = 22) # std.errors look okay
+tidy(nbs.pollock.fit, effects = "ran_pars")
+residual.plots[[3]] # this looks good
+residual.plots[[4]] # this isn't my fav - switching to delta-lognormal with iid & spatial on x2
+residual.plots[[5]] # not so nice variation fro the tweedie distribution, should we be using different residuals? 
+residual.plots[[6]] # same
+residual.plots[[7]] # looks good for a hurdle model
+residual.plots[[8]] # not bad not great
+
+
+# spatial residauls, looking for clustering of similar direction poitns,
+# used scaled residuals from the dharma object
+spatial.plots[[1]]
+spatial.plots[[2]] # 
+spatial.plots[[3]]
+spatial.plots[[4]] # nbs capelin very few high abundance caught
+spatial.plots[[5]]
+spatial.plots[[6]] # sebs pollock, maybe some negative residuals in the northern part of the survey early on? Part of that is the disappearance of the cold pool? 
+spatial.plots[[7]]
+spatial.plots[[8]]
 ```
 
 
@@ -456,12 +616,14 @@ nbs.grid <- read.csv(here("Results",
 sebs.grid <- read.csv(here("Results", 
                            paste0(year(Sys.Date()), "_ESR"), "SEBS_prediction-grid.csv"))
 
+sebs.grid.red <- read.csv(here("Results", 
+                               paste0(year(Sys.Date()), "_ESR"), "SEBS_Capelin_All_prediction-grid.csv"))
+
 # predict sebs and nbs
 # model list 
-model.list <- list(nbs.forage.fit, nbs.pollock.fit, nbs.herring.fit, nbs.capelin.fit,
-                   sebs.forage.fit, sebs.pollock.fit, sebs.herring.fit)
-names(model.list) <- c("nbs.forage", "nbs.pollock", "nbs.herring", "nbs.capelin",
-                       "sebs.forage", "sebs.pollock", "sebs.herring")
+#head(model.list)
+# remove the capelin from the model list
+model.list[["sebs.capelin"]] <- NULL
 
 grid.list <- list(nbs.grid, sebs.grid)
 names(grid.list) <- c("nbs", "sebs")
@@ -480,7 +642,7 @@ predict_index <- function(model.name, model.list, grid.list) {
   }
   
   preds <- predict(mod, newdata = grid, return_tmb_object = TRUE)
-  index <- get_index(preds, bias_correct = TRUE)
+  index <- get_index(preds, bias_correct = TRUE, area = 1)
   
   # column with model name
   index$model <- model.name
@@ -490,7 +652,7 @@ predict_index <- function(model.name, model.list, grid.list) {
 }
 
 # if you want to use parallel processing with increased cores
-TMB::openmp(n = 8) # can use parallel::detectCores to see how many cores the computer has
+#TMB::openmp(n = 8) # can use parallel::detectCores to see how many cores the computer has
 
 index_results <- map(names(model.list), 
     ~ predict_index(model.name = .x, model.list = model.list, grid.list = grid.list))
@@ -503,17 +665,20 @@ indicies <- bind_rows(index_results) %>%
                                                              ifelse(str_detect(model, "herring"), "Herring", NA)))))
 
 # capelin model for sebs were fit differently than the other models
-pred.capelin2 <- predict(sebs.capelin.fit2, newdata = sebs.grid, return_tmb_object = T)
-pred.capelin <- predict(sebs.capelin.fit.red, newdata = bs.grid.doy, return_tmb_object = T)
+pred.capelin <- predict(sebs.capelin.fit.red, newdata = sebs.grid.red, return_tmb_object = T)
 
-capelin.index2 <- get_index(pred.capelin2, bias_correct = TRUE)
-capelin.index <- get_index(pred.capelin, bias_correct = TRUE)
+capelin.index <- get_index(pred.capelin, bias_correct = TRUE, area = 1) %>%
+  mutate(region = "SEBS",
+         species = "Capelin",
+         model = "sebs.capelin")
+
+indicies2 <- rbind(indicies, capelin.index)
 
 # once we determine which capelin model is correct add it into the indicies df
-write.csv(indicies, here("Results", 
-                         paste0(year(Sys.Date()), "_ESR"), 
-                         paste0("Index_rel_biomass_", Sys.Date(), ".csv")))
-
+# write.csv(indicies2, here("Results",
+#                          paste0(year(Sys.Date()), "_ESR"),
+#                          paste0("Index_rel_biomass_", Sys.Date(), ".csv")), row.names = F)
+# TMB::openmp(n = 1) 
 ```
 
 # plot the ESR indicies
@@ -521,24 +686,28 @@ write.csv(indicies, here("Results",
 ```{r}
 # if they need to be loaded can be done here
 # include the correct date of the version of relative abundance  you want to use
-correct.date <- "2026-07-01" # most recent run
+correct.date <- "2026-07-10" # most recent run
 indicies <- read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
-              paste0("Index_rel_biomass_", correct.date, ".csv")))
+              paste0("Index_rel_biomass_", correct.date, ".csv"))) %>%
+  group_by(region, species) %>%
+  complete(sample_year = 2003:year(Sys.Date())) %>%
+  ungroup()
 
 sp.list <- unique(indicies$species)
 
 plot_ESR <- function(sp_name, data) {
   dat <- filter(data, species == sp_name)
   
-  ggplot(aes(x = sample_year, y = est, group = region, 
-                          color = region), data = dat) +
-          geom_point(size=2)+
-          geom_line()+
-          geom_errorbar(aes(ymin = lwr, ymax = upr,
-                            group = region, color = region), width=.1, 
-                        position=position_dodge(0.05)) +
+  ggplot(data = dat, aes(x = sample_year, y = est/1000, group = region, 
+                          color = region)) +
+          geom_pointrange(aes(ymin = lwr/1000, ymax = upr/1000, 
+                              group = region, color = region))+
+          geom_line() +
+          #geom_errorbar(aes(ymin = lwr/1000, ymax = upr/1000,
+           #                 group = region, color = region), width=.1, 
+            #            position=position_dodge(0.05)) +
           theme_cowplot(12)+
-          ylab(bquote("CPUE (kg/"* ~ km^2*')'))+
+          ylab(bquote("Relative Biomass Index (metric tonne/"* ~ km^2*')'))+
           labs(title=paste(sp_name, "- Late Summer/Fall Surface Trawl Surveys"), 
                x ="Year", color = "Region", cex=3)+
           theme(legend.position = "right",
@@ -547,10 +716,11 @@ plot_ESR <- function(sp_name, data) {
                 legend.title = element_text(size = 16),
                 axis.text = element_text(size = 12),
                 panel.background = element_rect(colour = "black", linewidth=1))+
+          scale_x_continuous(breaks = seq(min(dat$sample_year), max(dat$sample_year), 5)) +
           #scale_y_continuous(limits = c(0, 650)) +
-          scale_color_manual(values=c('#003366','#0099CC'))+
+          scale_color_manual(values=c('#003366','#0099CC'))#+
           #scale_color_manual(values=c('#003366','#0099CC'))+
-          geom_point(size=1)
+          #geom_point(size=1)
   
 }
 
@@ -563,101 +733,18 @@ for(i in 1:length(sp.list)) {
 
 gridExtra::grid.arrange(grobs = plot_list)
 
+names(plot_list) <- c("Capelin_All", "Forage", "Pacific Herring_All", "Pollock_A0")
+
+# save the esr plots
+lapply(1:length(plot_list), 
+       function(x)ggsave(filename = here("Results", paste0(year(Sys.Date()), "_ESR"),
+                                         paste0(names(plot_list)[[x]], 
+                                                fam_label, "_timeseries_", run_date, ".pdf")),
+                           dpi = 300, height = 5, width = 6.5,
+                         plot = plot_list[[x]]))
+
 
 ```
 
 
-compare the two capelin indicies
-```{r}
-capelin.index2$model_type <- "random_walk"
-capelin.index %>%
-  mutate(model_type = "reduced_model") %>%
-  rbind(capelin.index2) %>%
-  ggplot() +
-  geom_pointrange(aes(x = sample_year, y = est, 
-                      ymin = lwr, ymax = upr,
-                      color = model_type))
-```
-
-# capelin cv
-
-can we use cross validation to get a better idea of which modelling approach is better?
-Following this vignette: https://sdmtmb.github.io/sdmTMB/articles/cross-validation.html
-```{r}
-# group data by years rather than slicing years
-fold_vector <- as.numeric(as.factor(ts.capelin$sample_year))
-# fold_vector2 <- as.numeric(as.factor(ts.capelin.red$sample_year))
-# this allows for leave-one-year-out validation
-
-# set up paralell processing
-future::plan(future::multisession)
-rw_cv <- sdmTMB_cv(data = ts.capelin,
-            formula = catch_kg ~ 0 + scale_doy,  # Remove the factor year
-            offset = "log_effort",
-            time_varying = ~ 1,                  # Turn on time-varying intercepts
-            time_varying_type = "rw",
-            time = "sample_year",
-            # remove extra time for cv 
-            #extra_time =c(2013, 2015, 2017, 2019, 2020, 2021, 2023),
-            mesh = mesh.sebs,
-            family = tweedie(link = "log"),
-            spatial = "on",
-            spatiotemporal = "off",
-            anisotropy = TRUE,
-            fold_ids = fold_vector
-)
-
-TMB::openmp(n = 1) 
-
-# Now set up your parallel structure
-future::plan(future::sequential)
-# run the reduced dataset model
-red_cv <- sdmTMB_cv(data = ts.capelin, 
-            # right now estimating each yuear as a fixed effect
-            #catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
-            # include a random effect for year
-            catch_kg ~ 0 + scale_doy + (1 | fct_year),
-            offset = "log_effort",
-            time = "fct_year",
-            mesh = mesh.sebs, 
-            spatiotemporal = "iid",
-            spatial = "on",
-            family = tweedie(link = "log"),
-            share_range = TRUE, # default for sdmTMB
-            anisotropy = TRUE,
-            fold_ids = fold_vector
-)
-
-
-
-rw_cv$sum_loglik # full dataset: -33453.78
-red_cv$sum_loglik # full dataset: -34874.86
-#red_cv$sum_loglik #(outputs -9.36e-21, -1.511e-20)
-
-# mean log likelihoods
-mean_loglike_rw <- rw_cv$sum_loglik / nrow(rw_cv$data) # full df -34.10172
-mean_loglike_red <- red_cv$sum_loglik / nrow(red_cv$data) # -35.55032
-
-# RMSE across entire dataset:
-sqrt(mean((rw_cv$data$catch_kg - rw_cv$data$cv_predicted)^2)) #24.92
-sqrt(mean((red_cv$data$catch_kg - red_cv$data$cv_predicted)^2)) #0
-
-# ggplot() +
-#   geom_point(aes(x = rw_cv$data$catch_kg, rw_cv$data$cv_predicted))
-
-# RMSE by fold
-rmse_cv <- dplyr::group_by(rw_cv$data, cv_fold) |> 
-  dplyr::summarize(
-    mae = mean(abs(catch_kg - cv_predicted)),
-    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
-# for random effects model
-rmse_cv_red <- dplyr::group_by(red_cv$data, cv_fold) |> 
-  dplyr::summarize(
-    mae = mean(abs(catch_kg - cv_predicted)),
-    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
-
-ggplot() +
-  #geom_line(aes(x = cv_fold, rmse), data = rmse_cv, col = "red") +
-  geom_line(aes(x = cv_fold, rmse), data = rmse_cv_red, col = "blue")
-```
 
