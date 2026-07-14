@@ -15,7 +15,7 @@ source("Scripts/helper_fxns/clean_pull_data.R")
 ```{r}
 # make sure the proper packages are install and loaded
 pkgs <- c("visreg", "sdmTMB", "sf", "concaveman", "cowplot", "gridExtra", "patchwork",
-          "lubridate", "here")
+          "lubridate", "here", "ggplotify")
 
 for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) {
@@ -331,13 +331,9 @@ nbs.herring.fit <- set_fit_TMB(data = ts.list,
                                 formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
                                 time = "sample_year",
                                 offset = "log_effort",
-                               family = tweedie(link = "log"),
-                               spatial = "on",
-                               spatiotemporal = "iid",
-                                # family = delta_lognormal(link1 = "logit", link2 = "log"),
-                                # spatial = list("on", "on"),
-                                # #spatiotemporal = list("off", "off"), # meets sanity
-                                # spatiotemporal = list("iid", "iid"),
+                                family = tweedie(link = "log"),
+                                spatial = "on",
+                                spatiotemporal = "iid",
                                 share_range = TRUE,
                                 anisotropy = TRUE
                                 ) 
@@ -507,9 +503,9 @@ run_date <- "2026-07-13"
 # nbs.capelin.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_NBS",
 #                                run_date, "Capelin_Alltweedie_fit.RDS"))
 # nbs.jellyfish.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Jellyfish_NBS",
-#                                run_date, "Jellyfish_NBStweedie_fit.RDS"))
+#                                run_date, "Jellyfishtweedie_fit.RDS"))
 # nbs.pcod.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Cod_A0_NBS",
-#                                run_date, "Pacific Cod_A0_NBStweedie_fit.RDS"))
+#                                run_date, "Pacific Cod_A0tweedie_fit.RDS"))
 # 
 # sebs.forage.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Forage_SEBS",
 #                                run_date, "Foragetweedie_fit.RDS"))
@@ -520,9 +516,9 @@ run_date <- "2026-07-13"
 # sebs.capelin.fit.red <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_SEBS",
 #                                run_date, "Capelin_Allbinomial_Gamma_fit.RDS"))
 # sebs.jellyfish.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Jellyfish_SEBS",
-#                                run_date, "Jellyfish_SEBStweedie_fit.RDS"))
+#                                run_date, "Jellyfishtweedie_fit.RDS"))
 # sebs.pcod.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Cod_A0_SEBS",
-#                                run_date, "Pacific Cod_A0_SEBStweedie_fit.RDS"))
+#                                run_date, "Pacific Cod_A0tweedie_fit.RDS"))
 
 ```
 
@@ -545,25 +541,16 @@ names(model.list) <- c("nbs.forage", "nbs.pollock", "nbs.herring", "nbs.capelin"
 
 this takes longer to run since i'm simulating 500 times to then extract dharma residuals.
 ```{r}
-capelin.only <- filter(ts, region == "SEBS" & sp_name == "Capelin_All") %>%
-  filter(sample_year != 2016)
-everything.else <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All"))
-#
-# # create two seperate lists
-ts.list.region <- split(everything.else, list(everything.else$sp_name, everything.else$region))
-ts.list.region$Capelin_All.SEBS <- capelin.only
-
-names(ts.list.region) <- c("nbs.capelin","nbs.forage","nbs.jellyfish","nbs.pcod",
-                           "nbs.herring", "nbs.pollock",
-                           "sebs.capelin", "sebs.forage", "sebs.jellyfish", "sebs.pcod",
-                           "sebs.herring", "sebs.pollock")
+# include run_date if you are loading models that were run a different day than today
 # run_date <- "2026-07-13"
-# 
-# ts.long <- bind_rows(ts.list) %>%
-#   filter(sp_name %in% c("Jellyfish", "Pacific Cod_A0"))
-# 
-# ts.list.region <- split(ts.long, list(ts.long$sp_name, ts.long$region))
-# names(ts.list.region) <- c("nbs.jellyfish", "nbs.pcod", "sebs.jellyfish", "sebs.pcod")
+# create a list of data sep by sp and region based on the original input to the fit sdmtMBs
+tmp <- dplyr::bind_rows(ts.list)
+ts.list.region <- split(tmp, list(tmp$sp_name, tmp$region))
+
+names(ts.list.region) <- c("nbs.capelin","nbs.forage", "nbs.jellyfish", 
+                           "nbs.pcod", "nbs.herring", "nbs.pollock",
+                           "sebs.capelin", "sebs.forage", "sebs.jellyfish", 
+                           "sebs.pcod", "sebs.herring", "sebs.pollock")
 
 # testing value
 #name <- "nbs.capelin.fit"
@@ -585,36 +572,45 @@ for(name in names(model.list)) {
   sims <- simulate(mod, nsim = 500, type = "mle-mvn")
   resid <- dharma_residuals(sims, mod, return_DHARMa = TRUE)
   
-  # set up saving the plot
-  png(filename = here("Results", paste0(year(Sys.Date()), "_ESR"), 
-                      paste0(unique(df$sp_name),"_", unique(df$region)),
-                           run_date, paste0(unique(df$sp_name), fam_label, "_resid_plot.png")))
-  plot(resid, title = paste(name, fam_label))
-  dev.off()
-  # record the plot to put in a list
-  residual.plot <- recordPlot()
-  plot.new()
-  residual.plots[[name]] <- residual.plot
+  # create dharma plots as ggplots
+  p_qq <- as.grob(~DHARMa::plotQQunif(resid))
+  p_res <- as.grob(~DHARMa::plotResiduals(resid))
   
+  # combine residual plots
+  dharma_plots <- wrap_plots(p_qq, p_res) +
+    plot_annotation(title = paste(name, fam_label, "DHARMa Diagnostics"))
   
+  # put plot in a list
+  residual.plots[[name]] <- dharma_plots
+  
+  # save location directory creation ifelse
+  save_path <- here("Results",
+                    paste0(year(Sys.Date()), "_ESR"),
+                    paste0(unique(df$sp_name), "_", unique(df$region)), run_date)
+  if(!dir.exists(save_path)) dir.create(save_path, recursive = TRUE)
+  
+  # save residual plot
+  ggsave(filename = file.path(save_path, paste0(unique(df$sp_name), "_", fam_label, "_resid_plot.png")),
+         plot = dharma_plots, width = 10, height = 5)
   
   # put the residuals in a df for spatial plotting
   df$resid <- resid$scaledResiduals
-  
+  residual.df[[name]] <- df
   
   # create spatial plot
   spatials <- ggplot(df) +
     geom_point(aes(X,Y, col = resid)) +
-    labs(title = paste(name, fam_label)) +
-    scale_colour_gradient2() +
+    labs(title = paste(name, fam_label, "Spatial residuals")) +
+    scale_colour_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0.5) +
     facet_wrap(~sample_year) +
-    coord_fixed()
+    coord_fixed() +
+    theme_minimal()
   
   # save plot
-  ggsave(filename = here("Results", paste0(year(Sys.Date()), "_ESR"), paste0(unique(df$sp_name), "_",
-                                                                               unique(df$region)),
-                           run_date, paste0(unique(df$sp_name), fam_label, "_spatial_resid.png")),
-         plot = spatials)
+  ggsave(filename = here("Results", paste0(year(Sys.Date()), "_ESR"), 
+                         paste0(unique(df$sp_name), "_", unique(df$region)), run_date,
+                         paste0(unique(df$sp_name), fam_label, "_spatial_resid.png")),
+         plot = spatials, width = 8, height = 8)
   
   # put into list to look at
   spatial.plots[[name]] <- spatials
@@ -668,6 +664,9 @@ model.opts <- data.frame(sp_name = c("Forage","Pollock_A0", "Pacific Herring_All
                                   "Capelin_All", "Jellyfish", "Pacific Cod_A0"),
                       model_names = c("forage", "pollock", "herring", "capelin",
                                       "jellyfish", "pcod"))
+
+# maybe best to remove the nbs pcod model
+model.list[["nbs.pcod"]] <- NULL
 
 #predict & extract indicies
 predict_index <- function(model.name, model.list, model_options = model.opts) {
