@@ -23,7 +23,9 @@ library(EMAdownload)
 # Yearly settings
 ## Need to include sand lance unid now because NBS has moved towards using that in catch tsn: 171671
 # this is for testing within script, normally this will be input into the function
-# tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672, 171671)
+# tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672, 171671,
+#           # add in the jellyfish tsns (below)
+#           50623, 51640, 51641, 51669, 51671, 51695, 51696, 51700, 51701, 51705, 51707, 719327)
 # this.year <- 2024
 # region <- "NBS"
 
@@ -73,6 +75,10 @@ pull_clean_catch <- function(this.year, tsns, region) {
            Forage = sum(`Saffron Cod_All`, `Pacific Herring_All`, `Capelin_All`, `Rainbow Smelt_All`,
                         `Chum Salmon_J`, `Coho Salmon_J`, `Chinook Salmon_J`, `Pink Salmon_J`, `Sockeye Salmon_J`,
                         `Pollock_A0`, `Pacific Cod_A0`),
+           Jellyfish = sum(`Lions mane_U`, `Aurelia sp._U`, `Aequorea  sp._U`, `Northern Sea Nettle_U`,
+                           `Whitecross jelly_U`, `Fried egg jellyfish_U`, `Aurelia labiata_U`,
+                           `Cyanea sp._U`, `Brownbanded Moon Jelly_U`, `Aurelia aurita_U`,
+                           `Chrysaora jellyfish_U`, `Fried egg jelly_U`),
            Lat = eq_latitude,
            Lon = eq_longitude,
            doy = yday(haul_date))

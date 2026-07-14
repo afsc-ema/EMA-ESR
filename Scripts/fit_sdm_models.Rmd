@@ -29,12 +29,15 @@ for (pkg in pkgs) {
 
 # Pull in data
 ```{r}
-tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672, 171671) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function
+tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 
+          161975, 164711, 162041, 164708, 171672, 171671,
+            # add in the jellyfish tsns (below)
+          50623, 51640, 51641, 51669, 51671, 51695, 51696, 51700, 51701, 51705, 51707, 719327) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function
 this.year <- 2025
 
 nbs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "NBS") %>%
   # this pivot longer wont work if you change the tsns above 
-  pivot_longer(cols = c("Chinook Salmon_J":"Forage"), names_to = "sp_name", values_to = "catch_kg") %>%
+  pivot_longer(cols = c("Chinook Salmon_J":"Jellyfish"), names_to = "sp_name", values_to = "catch_kg") %>%
   add_utm_columns(., ll_names = c("Lon", "Lat"),
                   utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
   mutate(region = "NBS",
@@ -42,7 +45,7 @@ nbs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "NBS") %
 
 sebs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "SEBS") %>%
   # this pivot longer wont work if you change the tsns above 
-  pivot_longer(cols = c("Chinook Salmon_J":"Forage"), names_to = "sp_name", values_to = "catch_kg") %>%
+  pivot_longer(cols = c("Chinook Salmon_J":"Jellyfish"), names_to = "sp_name", values_to = "catch_kg") %>%
   add_utm_columns(., ll_names = c("Lon", "Lat"),
                   utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
   mutate(region = "SEBS", 
@@ -56,9 +59,9 @@ ts <- rbind(sebs.ts, nbs.ts) # crs for NBS is 32603, SEBS is 32602
 # get the species names in a vector, there are 31, but we're only interested in a few for the ESRs 
 species_names <- unique(ts$sp_name) 
 species_names <- species_names[species_names %in% c("Capelin_All", "Forage", "Pacific Herring_All",
-                                                   "Pollock_A0")]
+                                                   "Pollock_A0", "Pacific Cod_A0", "Jellyfish")]
 ts <- filter(ts, sp_name %in% species_names) %>%
-  filter(!(is.na(effort))) # drop any stations that have NA for effort
+  filter(!(is.na(effort))) # drop any stations that have NA for effort, right now drops 5
 
 ts <- mutate(ts, log_effort = log(effort)) %>%
   group_by(region, sp_name) %>%
@@ -69,8 +72,15 @@ ts <- mutate(ts, log_effort = log(effort)) %>%
          scale_doy2 = (doy - mean_doy)/sd_doy,
          scaled_median = (median_doy - mean_doy) / sd_doy)
 
-ts.red <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All" & sample_year == 2016))
-#write.csv(ts.red, here("Results", paste0(year(Sys.Date()), "_ESR"), paste0("nbs_sebs_timeseries"))
+# remove the 2016 year for capelin and 2003 for jellyfish
+# remove an instance where the pcod caught in 2012 at a station wasn't weighed and so uses a placeholder of -999
+ts.red <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All" & sample_year == 2016),
+                     !(region %in% c("NBS", "SEBS") & sp_name == "Jellyfish" & sample_year == 2003),
+                     !(region == "NBS" & sp_name == "Pacific Cod_A0" & sample_year %in% c(2003, 2008,
+                                                                                          2009, 2010,
+                                                                                          2014, 2018)),
+                     catch_kg >= 0)
+#write.csv(ts.red, here("Results", paste0(year(Sys.Date()), "_ESR"), paste0("nbs_sebs_timeseries.csv")))
 
 # datalist just by the species name so includes region for both within a specis
 ts.list <- split(ts.red, list(ts.red$sp_name))
@@ -83,14 +93,16 @@ Things to look for -
 
 ```{r}
 # check to make sure there's no negative or NAs in catch data
-table(is.na(ts$catch_kg)) # none
-table(ts$catch_kg < 0) # none
-table(is.na(ts$effort)) # any NAs in effort need to be removed
+table(is.na(ts.red$catch_kg)) # none
+table(ts.red$catch_kg < 0) # none
+table(is.na(ts.red$effort)) # any NAs in effort need to be removed
 
 forage <- ts.list[["Forage"]]
 pol <- ts.list[["Pollock_A0"]]
 capelin <- ts.list[["Capelin_All"]]
 herring <- ts.list[["Pacific Herring_All"]]
+pcod <- ts.list[["Pacific Cod_A0"]]
+jelly <- ts.list[["Jellyfish"]]
 
 # both regions here
 # some years with zero, 0 encounter rates, i.e., multiple years where all stations had some forage catch
@@ -102,24 +114,89 @@ table(pol$catch_kg > 0, pol$sample_year, pol$region)
 table(capelin$catch_kg > 0, capelin$sample_year, capelin$region)
 # for NBS good mix of encounter non encounter for both NBS and SEBS
 table(herring$catch_kg >0, herring$sample_year, herring$region)
-
+# for pcod lots of instances of no encounter in the nbs very few years with positive enounters
+# this will cause conversion issues which will likely need to be solved with a random walk and/or dropping data. For sebs more years with positive encountersno years without some enounters so thats good
+table(pcod$catch_kg > 0, pcod$sample_year, pcod$region)
+# nearly no stations that didn't have some biomass of jellyfish (although some which feels improbable)
+table(jelly$catch_kg > 0, jelly$sample_year, jelly$region)
 
 #' conclusions:
 #' Forage: perhaps no need for a hurdle model, just use a positive encounter model for catch such as the tweedie
 #' Pollock: NBS likely needs a hurdle model, like delta_gamma or delta_lognormal, SEBS can be tweedie
 #' Capelin, high zero encounters probably delta_lognormal
 #' Herring probably can use a delta-gamma or delta_lognormal. 
+#' Pcod NBS will need a hurdle model probably with a random walk for years, SEBS try out a tweedie but then can come back to a hurdle if needed
+#' Jellyfish: tweedie
 
 print(pol %>% filter(region == "NBS",
                catch_kg > 0) %>%
   count(sample_year), n = 21)
 ```
 
-
+clean up wrapper fxn
 # sdmTMB wrapper fxn
 ```{r}
-# this function fits a sdmTMB model that has offset log effort and a model structure of f-year and s-scale.doy
-# this has indepedent year effects
+# function that creates a prediction grid for each species
+create_prediction_grid <- function(ts, fit, survey_region, sp_name, year, ts_scaled_median) {
+  
+  # While not necessary to have each species with its own prediction grid we have several species
+  # that have different length time series so having indidivudal preidction grids are good. 
+  # This ensures custom year subsets never overwrite or share files with other species.
+  grid_file <- here(
+    "Results", 
+    paste0(year, "_ESR"), 
+    "Prediction_grids",
+    paste0(survey_region, "_", sp_name, "_prediction-grid.csv")
+  )
+  
+  grid_folder <- here(
+    "Results", 
+    paste0(year, "_ESR"), 
+    "Prediction_grids"
+    )
+  
+  if(!dir.exists(grid_folder)) dir.create(grid_folder, recursive = T)
+  
+  # If THIS specific species' grid already exists, skip it
+  if (file.exists(grid_file)) {
+    message("Prediction grid for ", survey_region, " (", sp_name, ") already exists.")
+    return(NULL)
+  }
+  
+  # Create a prediction grid for the specific survey region and species name
+  ts.sf <- ts %>%
+    dplyr::select(X, Y, eq_latitude, eq_longitude, crs) %>%
+    mutate(X = X * 1000, Y = Y * 1000) %>% 
+    st_as_sf(coords = c("X", "Y"), crs = unique(ts$crs))
+  
+  convex_hull <- concaveman(ts.sf, concavity = 3)
+  convex_buff <- st_buffer(convex_hull, dist = 15e3)
+  
+  grid_geom <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
+    st_intersection(convex_buff)
+  
+  bs.grid <- do.call(rbind, st_geometry(grid_geom)) %>%
+    as_tibble() %>% 
+    setNames(c("X", "Y")) %>%
+    mutate(X = X / 1e3, Y = Y / 1e3)
+  
+  # Use only the years present in the original df
+  bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts$sample_year))
+  # if the formula uses doy2 then use this one, if not use scale doy (meidan scaled)
+  has_doy2 <- any(str_detect(as.character(fit$formula[[1]]), "scale_doy2"))
+  
+  if (has_doy2) {
+    bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy2", ts_scaled_median)
+  } else {
+    bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
+  }
+  
+  write.csv(bs.grid.doy, file = grid_file, row.names = FALSE)
+  message("Created prediction grid here:", grid_file)
+}
+
+## wrapper function for sdmTMB
+
 set_fit_TMB <- function(
     data,
     survey_region,
@@ -129,185 +206,75 @@ set_fit_TMB <- function(
     ...) {
   
   set.seed(2026)
-  
-  # set directory for results
   today <- Sys.Date()
   year <- year(today)
+  
+  # set directory
   path <- here("Results", paste0(year, "_ESR"), paste0(sp_name, "_", survey_region), today)
   if(!dir.exists(path)) dir.create(path, recursive = T)
   
   # change knots and if running quickly
   # (i.e. not a final model)
-   if(run_fast == TRUE){
+   if (run_fast) {
     n_x <- 50
-  } else {
-    # if we want to have different models
-    if(survey_region == "NBS") {
-      n_x = 200
-    } else {
-      if(survey_region == "SEBS") {
-        n_x = 200
-      }
-    }
+  } else if (!survey_region %in% c("NBS", "SEBS")) {
+    stop("Invalid survey region specified.")
   }
   
   
   # change data pending region & sp name
-  if(survey_region == "NBS"){
-    ts.tmp <- data[[sp_name]]
-    ts <- filter(ts.tmp, region == survey_region) %>%
-      as.data.frame()
-  } else {
-    if(survey_region == "SEBS") {
-      ts.tmp <- data[[sp_name]]
-    ts <- filter(ts.tmp, region == survey_region) %>%
-      as.data.frame()
-    } else {stop("data not supplied for region")}
-    
-  }
+  if (!sp_name %in% names(data)) stop("Species not found in data list")
+  
+  ts <- data[[sp_name]] %>%
+    filter(region == survey_region) %>%
+    as.data.frame()
+  
+  if (nrow(ts) == 0) stop("No data supplied for region: ", survey_region)
+
   
   # # print out median doy for *knowledge*
   ts_median <- unique(ts$median_doy)
   ts_scaled_median <- unique(ts$scaled_median)
-  
-  print(paste(survey_region, sp_name, "median doy", ts_median))
+  message(survey_region, " ", sp_name, " median doy: ", ts_median)
   
   ## create mesh
-  mesh <- make_mesh(ts, 
-            xy_cols = c("X", "Y"),
-            n_knots = n_x)
+  mesh <- make_mesh(ts, xy_cols = c("X", "Y"), n_knots = n_x)
 
   ## fit model 
-  fit <- sdmTMB(data = ts,
-                mesh = mesh, ...)
-
-  print(sanity(fit))
-  
-  mod_fam <- fit$family$family
-  fam_label <- paste(mod_fam, collapse = "_")
+  fit <- sdmTMB(data = ts, mesh = mesh, ...)
   
   # pulled from lauren's code
   # is the model fit?
   if(inherits(fit, "try-error")) {
     print(paste("model error for species", sp_name, "in region", survey_region))
-    
-  } else {
-    # otherwise, check to make sure the sanity checks are met
-    if(sanity(fit)$all_ok == FALSE) fit <- try(run_extra_optimization(fit, nlminb_loops = 2, 
-                                                                      newton_loops = 1)) }# close loop
+    return(fit)
+  }
   
-  # after that, check to see if the
+  # if sanity fails then run optimization 
+  if(!sanity(fit)$all_ok) {
+    fit <- try(run_extra_optimization(fit, nlminb_loops = 2, newton_loops = 1))
+  }
+  
+  # see if its better
   if(inherits(fit, "try-error")) {
-    print(paste("model error for species", sp_name, "in region", survey_region)) }
-  else {
-    # if the model doesn't have any sanity issues or model issues then... 
-    
-    # save model object
-    saveRDS(fit, file = paste0(here(path, sp_name), fam_label, "_fit.RDS"))
-    
-    # look to see if there is a prediction grid already in this years ESR folder
-    # Add a wrapper if statement if its the capelin prediction grid 
-    if(sp_name == "Capelin_All" & survey_region == "SEBS") {
-      # check to see if there's a capelin prediction grid
-      if(file.exists(here("Results", paste0(year, "_ESR"),
-                     paste0(survey_region, "_Capelin_All", "_prediction-grid.csv")))) {
-         print(paste("prediction grid for", survey_region, sp_name, "already exists"))
-      } else {
-        # create sebs capelin prediction grid
-        ts.sf <- ts %>%
-        dplyr::select(c(X, Y, eq_latitude, eq_longitude)) %>%
-        mutate(X = X*1000, Y = Y*1000) %>% # convert to meters for the crs conversion
-        st_as_sf(coords = c("X", "Y"), crs = unique(ts$crs))
-      
-        convex_hull <- concaveman(ts.sf, concavity = 3)
-        convex_buff <- st_buffer(convex_hull, dist = 15e3)
-        grid <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
-          st_intersection(convex_buff)
-        
-        # create spatial grid
-        bs.grid <- do.call(rbind, st_geometry(grid)) %>%
-          as.tibble() %>% setNames(c("X", "Y")) %>%
-          # convert df m back to km
-          mutate(X = X/1e3, Y = Y/1e3)
-        # replicate the grid across years (always in model)
-        bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts$sample_year))
-        # assuming we have scale_doy in model (which we should) replicate with the scaled doy
-        # to predict on the median value of the survey
-        
-        # need to insert an if else in case you're using scale_doy2 versus median scaled
-        # if there's any value matching scale_doy2 in the formula then we need to replicate_df
-        # based on that value not scale_doy
-        if(any(str_detect(as.character(fit$formula[[1]]), "scale_doy2")) == TRUE) {
-          # if true use scale_doy2
-          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy2", ts_scaled_median)
-        } else {
-          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
-        }
-        
-      
-        write.csv(bs.grid.doy, file = here("Results", paste0(year, "_ESR"),
-                       paste0(survey_region, "_Capelin_All", "_prediction-grid.csv")),
-                  row.names = FALSE)
-
-      } # close capelin prediction grid creation 
-    } else { 
-      
-      # if the sp_name is not capelin then... 
-      if(file.exists(here("Results", paste0(year, "_ESR"),
-                                         paste0(survey_region, "_prediction-grid.csv")))) {
-        print(paste("prediction grid for", survey_region, "already exists"))
-      } else {
-        # create prediction grids for this model
-      # take the data input, convert to sf 
-      ts.sf <- ts %>%
-        dplyr::select(c(X, Y, eq_latitude, eq_longitude)) %>%
-        mutate(X = X*1000, Y = Y*1000) %>% # convert to meters for the crs conversion
-        st_as_sf(coords = c("X", "Y"), crs = unique(ts$crs))
-      
-      convex_hull <- concaveman(ts.sf, concavity = 3)
-      convex_buff <- st_buffer(convex_hull, dist = 15e3)
-      grid <- st_make_grid(convex_buff, cellsize = 10e3, what = "centers") %>%
-        st_intersection(convex_buff)
-      
-      # create spatial grid
-      bs.grid <- do.call(rbind, st_geometry(grid)) %>%
-        as.tibble() %>% setNames(c("X", "Y")) %>%
-        # convert df m back to km
-        mutate(X = X/1e3, Y = Y/1e3)
-      # replicate the grid across years (always in model)
-      bs.grid.yrs <- replicate_df(bs.grid, "sample_year", unique(ts$sample_year))
-      # assuming we have scale_doy in model (which we should) replicate with the scaled doy
-      # to predict on the median value of the survey
-      # need to insert an if else in case you're using scale_doy2 versus median scaled
-        # if there's any value matching scale_doy2 in the formula then we need to replicate_df
-        # based on that value not scale_doy
-        if(any(str_detect(as.character(fit$formula[[1]]), "scale_doy2")) == TRUE) {
-          # if true use scale_doy2
-          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy2", ts_scaled_median)
-        } else {
-          bs.grid.doy <- replicate_df(bs.grid.yrs, "scale_doy", 0)
-        }
-      
-      write.csv(bs.grid.doy, file = here("Results", paste0(year, "_ESR"),
-                                         paste0(survey_region, "_prediction-grid.csv")),
-                row.names = FALSE)
-      } # close prediction grid if else creation
-    } # close the else of if spname == capelin
-      
+    print(paste("model error for species", sp_name, "in region", survey_region)) 
+    return(fit)
+  }
   
-    
-    
-    
-  } # close checking model errors
+  # save model object
+  fam_label <- paste(fit$family$family, collapse = "_")
+  saveRDS(fit, file = paste0(here(path, sp_name), fam_label, "_fit.RDS"))
   
-  print(paste("Model object and prediction grid (by year and scaled_doy and space) saved to", paste0(here(path))))
+  # create prediction grid
+  create_prediction_grid(ts, fit, survey_region, sp_name, year, ts_scaled_median)
+  
+  message("Model fits saved to:", path)
   
   return(fit)
   
 }
-
-
 ```
+
 
 ## fit sdmTMB models
 ```{r eval=FALSE, include=FALSE}
@@ -389,7 +356,39 @@ nbs.capelin.fit <- set_fit_TMB(data = ts.list,
                            spatiotemporal = "iid",
                            share_range = TRUE,
                            anisotropy = TRUE
-                           ) 
+                           )
+
+nbs.jellyfish.fit <- set_fit_TMB(data = ts.list,
+                                 survey_region = "NBS",
+                                 sp_name = "Jellyfish",
+                                 run_fast = FALSE,
+                                 n_x = 200,
+                                 
+                                 formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                                 time = "sample_year",
+                                 offset = "log_effort",
+                                 family = tweedie(link = "log"),
+                                 spatial = "on",
+                                 spatiotemporal = "iid",
+                                 share_range = TRUE,
+                                 anisotropy = TRUE
+                                 )
+
+nbs.pcod.fit <- set_fit_TMB(data = ts.list,
+                                 survey_region = "NBS",
+                                 sp_name = "Pacific Cod_A0",
+                                 run_fast = FALSE,
+                                 n_x = 100,
+                                 
+                                 formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                                 time = "sample_year",
+                                 offset = "log_effort",
+                                 family = tweedie(link = "log"),
+                                 spatial = "off",
+                                 spatiotemporal = "iid",
+                                 share_range = TRUE,
+                                 anisotropy = TRUE
+                                 )
 
 sebs.forage.fit <- set_fit_TMB(data = ts.list, 
                            survey_region = "SEBS", 
@@ -456,6 +455,38 @@ sebs.capelin.fit.red <- set_fit_TMB(data = ts.list,
                            anisotropy = TRUE
                                 )
 
+sebs.jellyfish.fit <- set_fit_TMB(data = ts.list,
+                                 survey_region = "SEBS",
+                                 sp_name = "Jellyfish",
+                                 run_fast = FALSE,
+                                 n_x = 200,
+                                 
+                                 formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                                 time = "sample_year",
+                                 offset = "log_effort",
+                                 family = tweedie(link = "log"),
+                                 spatial = "on",
+                                 spatiotemporal = "iid",
+                                 share_range = TRUE,
+                                 anisotropy = TRUE
+                                 )
+
+sebs.pcod.fit <- set_fit_TMB(data = ts.list,
+                                 survey_region = "SEBS",
+                                 sp_name = "Pacific Cod_A0",
+                                 run_fast = FALSE,
+                                 n_x = 200,
+                                 
+                                 formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                                 time = "sample_year",
+                                 offset = "log_effort",
+                                 family = tweedie(link = "log"),
+                                 spatial = "on",
+                                 spatiotemporal = "iid",
+                                 share_range = TRUE,
+                                 anisotropy = TRUE
+                                 )
+
 TMB::openmp(n = 1)  # goes back to only one cores
 ```
 
@@ -463,18 +494,22 @@ TMB::openmp(n = 1)  # goes back to only one cores
 read in models if you've already run them but want to evaluate or look at the model objects
 
 ```{r eval=FALSE, include=FALSE}
-run_date <- "2026-07-09"
+run_date <- "2026-07-13"
 
 # need to add in family of final model you want to pull in
 
 # nbs.forage.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Forage_NBS",
 #                                run_date, "Foragetweedie_fit.RDS"))
 # nbs.pollock.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pollock_A0_NBS",
-#                                run_date, "Pollock_A0binomial_Gamma.RDS"))
+#                                run_date, "Pollock_A0binomial_Gamma_fit.RDS"))
 # nbs.herring.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Herring_All_NBS",
 #                                run_date, "Pacific Herring_Alltweedie_fit.RDS"))
 # nbs.capelin.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_NBS",
 #                                run_date, "Capelin_Alltweedie_fit.RDS"))
+# nbs.jellyfish.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Jellyfish_NBS",
+#                                run_date, "Jellyfish_NBStweedie_fit.RDS"))
+# nbs.pcod.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Cod_A0_NBS",
+#                                run_date, "Pacific Cod_A0_NBStweedie_fit.RDS"))
 # 
 # sebs.forage.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Forage_SEBS",
 #                                run_date, "Foragetweedie_fit.RDS"))
@@ -482,8 +517,12 @@ run_date <- "2026-07-09"
 #                                run_date, "Pollock_A0tweedie_fit.RDS"))
 # sebs.herring.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Herring_All_SEBS",
 #                                run_date, "Pacific Herring_Alltweedie_fit.RDS"))
-# sebs.capelin.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_SEBS",
+# sebs.capelin.fit.red <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_SEBS",
 #                                run_date, "Capelin_Allbinomial_Gamma_fit.RDS"))
+# sebs.jellyfish.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Jellyfish_SEBS",
+#                                run_date, "Jellyfish_SEBStweedie_fit.RDS"))
+# sebs.pcod.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Cod_A0_SEBS",
+#                                run_date, "Pacific Cod_A0_SEBStweedie_fit.RDS"))
 
 ```
 
@@ -492,11 +531,15 @@ run_date <- "2026-07-09"
 From the model fitting object the sanity check has already been done, but here
 we'll review the diffferent spatial and randomized quantiles
 ```{r}
-# model list: 
+# model list:
 model.list <- list(nbs.forage.fit, nbs.pollock.fit, nbs.herring.fit, nbs.capelin.fit,
-                   sebs.forage.fit, sebs.pollock.fit, sebs.herring.fit, sebs.capelin.fit.red)
+                   nbs.jellyfish.fit, nbs.pcod.fit,
+                   sebs.forage.fit, sebs.pollock.fit, sebs.herring.fit, sebs.capelin.fit.red,
+                   sebs.jellyfish.fit, sebs.pcod.fit)
 names(model.list) <- c("nbs.forage", "nbs.pollock", "nbs.herring", "nbs.capelin",
-                       "sebs.forage", "sebs.pollock", "sebs.herring", "sebs.capelin")
+                       "nbs.jellyfish", "nbs.pcod",
+                       "sebs.forage", "sebs.pollock", "sebs.herring", "sebs.capelin",
+                       "sebs.jellyfish", "sebs.pcod")
 ```
 
 
@@ -505,13 +548,23 @@ this takes longer to run since i'm simulating 500 times to then extract dharma r
 capelin.only <- filter(ts, region == "SEBS" & sp_name == "Capelin_All") %>%
   filter(sample_year != 2016)
 everything.else <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All"))
-
-# create two seperate lists 
+#
+# # create two seperate lists
 ts.list.region <- split(everything.else, list(everything.else$sp_name, everything.else$region))
 ts.list.region$Capelin_All.SEBS <- capelin.only
 
-names(ts.list.region) <- c("nbs.capelin","nbs.forage", "nbs.herring", "nbs.pollock",
-                           "sebs.capelin", "sebs.forage", "sebs.herring", "sebs.pollock")
+names(ts.list.region) <- c("nbs.capelin","nbs.forage","nbs.jellyfish","nbs.pcod",
+                           "nbs.herring", "nbs.pollock",
+                           "sebs.capelin", "sebs.forage", "sebs.jellyfish", "sebs.pcod",
+                           "sebs.herring", "sebs.pollock")
+# run_date <- "2026-07-13"
+# 
+# ts.long <- bind_rows(ts.list) %>%
+#   filter(sp_name %in% c("Jellyfish", "Pacific Cod_A0"))
+# 
+# ts.list.region <- split(ts.long, list(ts.long$sp_name, ts.long$region))
+# names(ts.list.region) <- c("nbs.jellyfish", "nbs.pcod", "sebs.jellyfish", "sebs.pcod")
+
 # testing value
 #name <- "nbs.capelin.fit"
 # create empty plot list
@@ -610,36 +663,50 @@ spatial.plots[[8]]
 # Predict biomass across prediction grid and calculate index biomass
 Read in correct grid/fitted models
 ```{r eval=FALSE, include=FALSE}
-# read in prediction grid for said survey region 
-nbs.grid <- read.csv(here("Results", 
-                          paste0(year(Sys.Date()), "_ESR"), "NBS_prediction-grid.csv"))
-sebs.grid <- read.csv(here("Results", 
-                           paste0(year(Sys.Date()), "_ESR"), "SEBS_prediction-grid.csv"))
-
-sebs.grid.red <- read.csv(here("Results", 
-                               paste0(year(Sys.Date()), "_ESR"), "SEBS_Capelin_All_prediction-grid.csv"))
-
-# predict sebs and nbs
-# model list 
-#head(model.list)
-# remove the capelin from the model list
-model.list[["sebs.capelin"]] <- NULL
-
-grid.list <- list(nbs.grid, sebs.grid)
-names(grid.list) <- c("nbs", "sebs")
+# here is where you'd add another species if one was added to this script
+model.opts <- data.frame(sp_name = c("Forage","Pollock_A0", "Pacific Herring_All",
+                                  "Capelin_All", "Jellyfish", "Pacific Cod_A0"),
+                      model_names = c("forage", "pollock", "herring", "capelin",
+                                      "jellyfish", "pcod"))
 
 #predict & extract indicies
-predict_index <- function(model.name, model.list, grid.list) {
+predict_index <- function(model.name, model.list, model_options = model.opts) {
   mod <- model.list[[model.name]]
   
-  #is there a nbs at beginning of the model name?
-  if(str_detect(model.name, "^nbs\\.")) {
-    # make the grid the nbs grid
-    grid <- grid.list[["nbs"]]
+  # determine region from model.name
+  if (str_detect(model.name, "(?i)^nbs")) {
+    region <- "NBS"
+  } else if (str_detect(model.name, "(?i)^sebs")) {
+    region <- "SEBS"
   } else {
-    grid <- grid.list[["sebs"]]
-    
+    stop("Could not determine region from model name: ", model.name)
   }
+  
+  # match the lowercase model name with a single search list anywhere in the model.name
+  shorthand_sp <- str_extract(tolower(model.name), paste(model_options$model_names, collapse = "|"))
+  # if its an na it explodes
+  if (is.na(shorthand_sp)) {
+    stop("No matching shorthand sp in:", model.name)
+  }
+  
+  # filter to correct sp_name
+  full_sp_name <- model_options %>%
+    filter(model_names == shorthand_sp) %>%
+    pull(sp_name)
+  
+  # load correct prediction grid
+  grid_path <- here("Results", 
+                    paste0(year(Sys.Date()), "_ESR"),
+                    "Prediction_grids",
+                    paste0(region, "_", full_sp_name, "_prediction-grid.csv"))
+  # check to make sure it exists
+  if(!file.exists(grid_path)){
+    stop("grid does not exist", grid_path)
+  }
+  
+  grid <- read.csv(grid_path)
+  
+  # translate the species options
   
   preds <- predict(mod, newdata = grid, return_tmb_object = TRUE)
   index <- get_index(preds, bias_correct = TRUE, area = 1)
@@ -655,27 +722,19 @@ predict_index <- function(model.name, model.list, grid.list) {
 #TMB::openmp(n = 8) # can use parallel::detectCores to see how many cores the computer has
 
 index_results <- map(names(model.list), 
-    ~ predict_index(model.name = .x, model.list = model.list, grid.list = grid.list))
+    ~ predict_index(model.name = .x, model.list = model.list))
 
 indicies <- bind_rows(index_results) %>%
   mutate(region = ifelse(str_detect(model, "^nbs\\."), "NBS", "SEBS"),
          species = ifelse(str_detect(model, "forage"), "Forage", 
                           ifelse(str_detect(model, "pollock"), "Pollock",
                                            ifelse(str_detect(model, "capelin"), "Capelin",
-                                                             ifelse(str_detect(model, "herring"), "Herring", NA)))))
-
-# capelin model for sebs were fit differently than the other models
-pred.capelin <- predict(sebs.capelin.fit.red, newdata = sebs.grid.red, return_tmb_object = T)
-
-capelin.index <- get_index(pred.capelin, bias_correct = TRUE, area = 1) %>%
-  mutate(region = "SEBS",
-         species = "Capelin",
-         model = "sebs.capelin")
-
-indicies2 <- rbind(indicies, capelin.index)
+                                                             ifelse(str_detect(model, "herring"), "Herring",
+                                                                    ifelse(str_detect(model, "pcod"), "Pacific Cod",
+                                                                           ifelse(str_detect(model, "jellyfish"), "Jellyfish", NA)))))))
 
 # once we determine which capelin model is correct add it into the indicies df
-# write.csv(indicies2, here("Results",
+# write.csv(indicies, here("Results",
 #                          paste0(year(Sys.Date()), "_ESR"),
 #                          paste0("Index_rel_biomass_", Sys.Date(), ".csv")), row.names = F)
 # TMB::openmp(n = 1) 
@@ -686,7 +745,7 @@ indicies2 <- rbind(indicies, capelin.index)
 ```{r}
 # if they need to be loaded can be done here
 # include the correct date of the version of relative abundance  you want to use
-correct.date <- "2026-07-10" # most recent run
+correct.date <- "2026-07-13" # most recent run
 indicies <- read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
               paste0("Index_rel_biomass_", correct.date, ".csv"))) %>%
   group_by(region, species) %>%
@@ -733,7 +792,8 @@ for(i in 1:length(sp.list)) {
 
 gridExtra::grid.arrange(grobs = plot_list)
 
-names(plot_list) <- c("Capelin_All", "Forage", "Pacific Herring_All", "Pollock_A0")
+names(plot_list) <- c("Capelin_All", "Forage", "Pacific Herring_All", 
+                      "Jellyfish", "Pacific Cod_A0", "Pollock_A0")
 
 # save the esr plots
 lapply(1:length(plot_list), 
