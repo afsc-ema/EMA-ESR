@@ -15,7 +15,7 @@ source("Scripts/helper_fxns/clean_pull_data.R")
 ```{r}
 # make sure the proper packages are install and loaded
 pkgs <- c("visreg", "sdmTMB", "sf", "concaveman", "cowplot", "gridExtra", "patchwork",
-          "lubridate", "here", "ggplotify")
+          "lubridate", "here", "ggplotify", "tidyverse")
 
 for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) {
@@ -32,7 +32,9 @@ for (pkg in pkgs) {
 tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 
           161975, 164711, 162041, 164708, 171672, 171671,
             # add in the jellyfish tsns (below)
-          50623, 51640, 51641, 51669, 51671, 51695, 51696, 51700, 51701, 51705, 51707, 719327) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function
+          50623, 51640, 51641, 51669, 51671, 51695, 51696, 51700, 51701, 51705, 51707, 719327) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function which is dumb but I dont have the energy to fix
+
+# adjust to the current year
 this.year <- 2025
 
 nbs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "NBS") %>%
@@ -72,13 +74,14 @@ ts <- mutate(ts, log_effort = log(effort)) %>%
          scale_doy2 = (doy - mean_doy)/sd_doy,
          scaled_median = (median_doy - mean_doy) / sd_doy)
 
-# remove the 2016 year for capelin and 2003 for jellyfish
+# remove the 2016 year for capelin and 2003 for jellyfish (no jellyfish recorded in 2003)
 # remove an instance where the pcod caught in 2012 at a station wasn't weighed and so uses a placeholder of -999
+# also tried to remove 0 catch years for pcod in NBS to get model to converge but honestly that 
+# model sucks and shouldn't be used. 
 ts.red <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All" & sample_year == 2016),
                      !(region %in% c("NBS", "SEBS") & sp_name == "Jellyfish" & sample_year == 2003),
-                     !(region == "NBS" & sp_name == "Pacific Cod_A0" & sample_year %in% c(2003, 2008,
-                                                                                          2009, 2010,
-                                                                                          2014, 2018)),
+                     !(region == "NBS" & sp_name == "Pacific Cod_A0" & 
+                         sample_year %in% c(2003, 2008,2009, 2010,2014, 2018)),
                      catch_kg >= 0)
 #write.csv(ts.red, here("Results", paste0(year(Sys.Date()), "_ESR"), paste0("nbs_sebs_timeseries.csv")))
 
@@ -133,7 +136,7 @@ print(pol %>% filter(region == "NBS",
   count(sample_year), n = 21)
 ```
 
-clean up wrapper fxn
+
 # sdmTMB wrapper fxn
 ```{r}
 # function that creates a prediction grid for each species
@@ -214,7 +217,7 @@ set_fit_TMB <- function(
   if(!dir.exists(path)) dir.create(path, recursive = T)
   
   # change knots and if running quickly
-  # (i.e. not a final model)
+  # (i.e. not a final model), honestly sdmtMB is so fast i dont use this often
    if (run_fast) {
     n_x <- 50
   } else if (!survey_region %in% c("NBS", "SEBS")) {
@@ -277,7 +280,11 @@ set_fit_TMB <- function(
 
 
 ## fit sdmTMB models
+
+- note i don't run this chunk unless i'm sure i want to wait around forever
+below there is an option to read in most recent model run
 ```{r eval=FALSE, include=FALSE}
+# in comparison to VAST 
 # ObsModel 2,3 -> family = delta_gamma(link1 = "logit", link2 = "log")?
 # FieldConfig, first two elements are the spatial/spatiotemporal structure for the presence / absence part of the model. The second two elements are the spatial/spatiotemporal structure for the encounter model. 
 
@@ -706,7 +713,7 @@ predict_index <- function(model.name, model.list, model_options = model.opts) {
   grid <- read.csv(grid_path)
   
   # translate the species options
-  
+  # predictions and index take some time to run
   preds <- predict(mod, newdata = grid, return_tmb_object = TRUE)
   index <- get_index(preds, bias_correct = TRUE, area = 1)
   
@@ -749,7 +756,8 @@ indicies <- read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
               paste0("Index_rel_biomass_", correct.date, ".csv"))) %>%
   group_by(region, species) %>%
   complete(sample_year = 2003:year(Sys.Date())) %>%
-  ungroup()
+  ungroup() %>%
+  filter(model != "nbs.pcod") # remove this becasue it doesn't converge
 
 sp.list <- unique(indicies$species)
 
@@ -791,8 +799,9 @@ for(i in 1:length(sp.list)) {
 
 gridExtra::grid.arrange(grobs = plot_list)
 
+# check to make sure this naming is correct before saving
 names(plot_list) <- c("Capelin_All", "Forage", "Pacific Herring_All", 
-                      "Jellyfish", "Pacific Cod_A0", "Pollock_A0")
+                      "Jellyfish", "Pollock_A0", "Pacific Cod_A0")
 
 # save the esr plots
 lapply(1:length(plot_list), 
@@ -806,4 +815,110 @@ lapply(1:length(plot_list),
 ```
 
 
+Still to do - use the ESR facet plot template to calculate timeseries mean and standard deviation to show index variation around mean. 
+Template code below. Needs to be adjusted to ours.
+Plot NBS and SEBS separately. 
+
+```{r}
+#Code to create standardized multi-facet time series plots for ESRs
+#Code largely based on GAP Products figure code (https://github.com/afsc-gap-products/esrindex) POC: Sean Rohan
+
+
+library(ggplot2)
+library(dplyr)
+library(data.table)
+
+plank=read.csv("plank.csv")
+
+##change wide format to long format table
+plank.long <- melt(setDT(plank), id.vars = c("Year"), variable.name = "group")
+
+## calculate time series mean and sd for each species
+TS_sum <- plank.long %>%
+  group_by(group) %>%
+  summarise(mean = mean(value, na.rm=T),sd = sd(value, na.rm=T))
+
+## blue-strip color theme from gap-products/esrindex
+theme_blue_strip <- function() {
+  theme_bw() %+replace%
+    theme(axis.title = element_text(color = "black", face = "bold"),
+          axis.text = element_text(color = "black"),
+          axis.ticks = element_line(color = "black"),
+          panel.grid = element_blank(),
+          legend.title = element_blank(),
+          legend.position = "bottom",
+          strip.text = element_text(size = 9,
+                                    color = "white",
+                                    face = "bold",
+                                    margin = margin(0.5, 0, 0.5, 0, "mm")),
+          strip.background = element_rect(fill = "#0055a4",
+                                          color = NA))
+}
+
+## define other variables used in gap-products/esrindex code
+n_facet_row <- length(unique(plank.long$group))
+lab_fun <- scales::label_comma
+lab_trim <- FALSE
+lab_digits <- NULL
+
+#customize labels for each subplot 
+
+# plot labels
+new_labels.f=c("plank1.Mean"="plankton sp.1","plank2.Mean"="plankton sp.2","plank3.Mean"="plankton sp.3", "plank.Total"="Total Plankton")
+
+##############
+##plot 
+
+tiff("Fig_Plank_2025.tiff", width=7, height=7, units="in", res=600) 
+
+#gapproducts plot -note commented out code for CI ribbons and errorbars has old GAP-products naming conventions;  
+
+ggplot() +
+  #create horizontal lines of long-term mean and +/- 1SD
+  geom_hline(data = TS_sum,
+             mapping = aes(yintercept = mean),
+             color = "black") +
+  geom_hline(data = TS_sum,
+             mapping = aes(yintercept = mean+sd), 
+             linetype = 2,
+             color = "black") +
+  geom_hline(data = TS_sum,
+             mapping = aes(yintercept = mean-sd), 
+             linetype = 2,
+             color = "black") +
+
+  #plot confidence level ribbons or error bars (update data name and variable names pred_lci,obs_lci ) 
+  #geom_ribbon(data = fit_dat,
+  #            mapping = aes(x = year,
+  #                          ymin = pred_lci,
+  #                          ymax = pred_uci),
+  #            alpha = 0.3,
+  #            fill = ribbon_fill) +
+  #geom_errorbar(data = fit_dat,
+  #              mapping = aes(x = year,
+  #                            ymin = obs_lci,
+  #                            ymax = obs_uci), 
+  #              width = 0.5,
+#              color = errorbar_color) +
+  
+  #plot data points
+geom_line(data = plank.long,mapping = aes(x = Year, y = value),
+          color = "black") +
+  geom_point(data = plank.long,
+             mapping = aes(x = Year, y = value),
+             color = "black") +
+  #axis labels and scales
+  ylab(~paste("Plankton mean biomass (g ∙ ",m^-3,")"))+
+  scale_y_continuous( expand = expansion(mult = c(0, 0.5)), 
+                      labels = lab_fun(trim = lab_trim)) + #if want extra decimal point mult = c(0, 0.05)
+  scale_x_continuous(name = "Year")+#,
+  expand_limits(y = 0) +
+  facet_wrap(~group, 
+             scales = "free",
+             nrow = n_facet_row, labeller = labeller(group = new_labels.f)) + # scales = "free_y"
+  theme_blue_strip()
+
+dev.off() 
+
+```
 
