@@ -354,9 +354,13 @@ nbs.capelin.fit <- set_fit_TMB(data = ts.list,
                            formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
                            time = "sample_year",
                            offset = "log_effort",
-                           family = tweedie(link = "log"),
-                           spatial = "on",
-                           spatiotemporal = "iid",
+                           spatial = list("on","on"),
+                           spatiotemporal = list("iid", "iid"),
+                            family = delta_lognormal(link1 = "logit", link2 = "log"),
+                           #family = delta_gamma(link1 = "logit", link2 = "log"),
+                           # family = tweedie(link = "log"),
+                           # spatial = "on",
+                           # spatiotemporal = "iid",
                            share_range = TRUE,
                            anisotropy = TRUE
                            )
@@ -493,11 +497,11 @@ sebs.pcod.fit <- set_fit_TMB(data = ts.list,
 TMB::openmp(n = 1)  # goes back to only one cores
 ```
 
-## load other models (optional)
+## load old runs of models (optional)
 read in models if you've already run them but want to evaluate or look at the model objects
 
 ```{r eval=FALSE, include=FALSE}
-run_date <- "2026-07-13"
+run_date <- "2026-07-24"
 
 # need to add in family of final model you want to pull in
 
@@ -535,21 +539,23 @@ From the model fitting object the sanity check has already been done, but here
 we'll review the diffferent spatial and randomized quantiles
 ```{r}
 # model list:
+# already removed nbs pcod because that model doesn't converge nice
 model.list <- list(nbs.forage.fit, nbs.pollock.fit, nbs.herring.fit, nbs.capelin.fit,
-                   nbs.jellyfish.fit, nbs.pcod.fit,
+                   nbs.jellyfish.fit,
                    sebs.forage.fit, sebs.pollock.fit, sebs.herring.fit, sebs.capelin.fit.red,
                    sebs.jellyfish.fit, sebs.pcod.fit)
 names(model.list) <- c("nbs.forage", "nbs.pollock", "nbs.herring", "nbs.capelin",
-                       "nbs.jellyfish", "nbs.pcod",
+                       "nbs.jellyfish",
                        "sebs.forage", "sebs.pollock", "sebs.herring", "sebs.capelin",
                        "sebs.jellyfish", "sebs.pcod")
+
 ```
 
 
 this takes longer to run since i'm simulating 500 times to then extract dharma residuals.
 ```{r}
 # include run_date if you are loading models that were run a different day than today
-# run_date <- "2026-07-13"
+# run_date <- "2026-07-24"
 # create a list of data sep by sp and region based on the original input to the fit sdmtMBs
 tmp <- dplyr::bind_rows(ts.list)
 ts.list.region <- split(tmp, list(tmp$sp_name, tmp$region))
@@ -559,8 +565,11 @@ names(ts.list.region) <- c("nbs.capelin","nbs.forage", "nbs.jellyfish",
                            "sebs.capelin", "sebs.forage", "sebs.jellyfish", 
                            "sebs.pcod", "sebs.herring", "sebs.pollock")
 
+ts.list.region$nbs.pcod <- NULL
+
+
 # testing value
-#name <- "nbs.capelin.fit"
+#name <- "nbs.capelin"
 # create empty plot list
 residual.plots <- list()
 spatial.plots <- list()
@@ -632,7 +641,9 @@ for(name in names(model.list)) {
 
 #### review residual plots
 review the residual plots and spatial plots for each fitted object
-```{r}
+
+generally doing a spot check of this is good. 
+```{r eval=FALSE, include=FALSE}
 residual.plots[[1]] 
 sanity(nbs.forage.fit)
 print(tidy(nbs.forage.fit, effects = "fixed"), n = 22) # pretty good
@@ -716,6 +727,10 @@ predict_index <- function(model.name, model.list, model_options = model.opts) {
   # predictions and index take some time to run
   preds <- predict(mod, newdata = grid, return_tmb_object = TRUE)
   index <- get_index(preds, bias_correct = TRUE, area = 1)
+  # by keeping the area = 1 (instead of the area of the grid cells used in creating the prediction grid) when get_index is used it looks at the prediction (density (kg/km)) for each grid cell unit (km2) to calculate the scaled total biomass (kg) to return the scaled total biomass
+  # i.e. the relative metric tonnes for the area (rather than the absolute for the whole area).
+  # if you wanted absolute biomass than you'd use the grid cell size^2 (i believe 10e3 - so 
+  # 10e3 ^2 or 100e3 m2 or 100 km2
   
   # column with model name
   index$model <- model.name
@@ -725,7 +740,7 @@ predict_index <- function(model.name, model.list, model_options = model.opts) {
 }
 
 # if you want to use parallel processing with increased cores
-#TMB::openmp(n = 8) # can use parallel::detectCores to see how many cores the computer has
+TMB::openmp(n = 8) # can use parallel::detectCores to see how many cores the computer has
 
 index_results <- map(names(model.list), 
     ~ predict_index(model.name = .x, model.list = model.list))
@@ -737,7 +752,11 @@ indicies <- bind_rows(index_results) %>%
                                            ifelse(str_detect(model, "capelin"), "Capelin",
                                                              ifelse(str_detect(model, "herring"), "Herring",
                                                                     ifelse(str_detect(model, "pcod"), "Pacific Cod",
-                                                                           ifelse(str_detect(model, "jellyfish"), "Jellyfish", NA)))))))
+                                                                           ifelse(str_detect(model, "jellyfish"), "Jellyfish", NA))))))) %>%
+  # calculate mean value per model 
+  group_by(model) %>%
+  mutate(est_mean = mean(est),
+         est_mean_sd = sd(est))
 
 # once we determine which capelin model is correct add it into the indicies df
 # write.csv(indicies, here("Results",
@@ -751,8 +770,9 @@ indicies <- bind_rows(index_results) %>%
 ```{r}
 # if they need to be loaded can be done here
 # include the correct date of the version of relative abundance  you want to use
-correct.date <- "2026-07-13" # most recent run
-indicies <- read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
+correct.date <- "2026-07-24" # most recent run
+indicies <- #indicies %>%
+  read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
               paste0("Index_rel_biomass_", correct.date, ".csv"))) %>%
   group_by(region, species) %>%
   complete(sample_year = 2003:year(Sys.Date())) %>%
@@ -773,7 +793,7 @@ plot_ESR <- function(sp_name, data) {
            #                 group = region, color = region), width=.1, 
             #            position=position_dodge(0.05)) +
           theme_cowplot(12)+
-          ylab(bquote("Relative Biomass Index (metric tonne/"* ~ km^2*')'))+
+          ylab(bquote("Relative Biomass Index (metric tonne)"))+
           labs(title=paste(sp_name, "- Late Summer/Fall Surface Trawl Surveys"), 
                x ="Year", color = "Region", cex=3)+
           theme(legend.position = "right",
@@ -799,6 +819,7 @@ for(i in 1:length(sp.list)) {
 
 gridExtra::grid.arrange(grobs = plot_list)
 
+
 # check to make sure this naming is correct before saving
 names(plot_list) <- c("Capelin_All", "Forage", "Pacific Herring_All", 
                       "Jellyfish", "Pollock_A0", "Pacific Cod_A0")
@@ -812,6 +833,10 @@ lapply(1:length(plot_list),
                          plot = plot_list[[x]]))
 
 
+# just look at the capelin patterens
+plot_list[[1]] +
+  coord_cartesian(ylim = c(0,500))
+
 ```
 
 
@@ -819,29 +844,12 @@ Still to do - use the ESR facet plot template to calculate timeseries mean and s
 Template code below. Needs to be adjusted to ours.
 Plot NBS and SEBS separately. 
 
+# Standardized ESR indicies
 ```{r}
-#Code to create standardized multi-facet time series plots for ESRs
-#Code largely based on GAP Products figure code (https://github.com/afsc-gap-products/esrindex) POC: Sean Rohan
-
-
-library(ggplot2)
-library(dplyr)
-library(data.table)
-
-plank=read.csv("plank.csv")
-
-##change wide format to long format table
-plank.long <- melt(setDT(plank), id.vars = c("Year"), variable.name = "group")
-
-## calculate time series mean and sd for each species
-TS_sum <- plank.long %>%
-  group_by(group) %>%
-  summarise(mean = mean(value, na.rm=T),sd = sd(value, na.rm=T))
-
 ## blue-strip color theme from gap-products/esrindex
 theme_blue_strip <- function() {
   theme_bw() %+replace%
-    theme(axis.title = element_text(color = "black", face = "bold"),
+    theme(axis.title = element_text(color = "black"),
           axis.text = element_text(color = "black"),
           axis.ticks = element_line(color = "black"),
           panel.grid = element_blank(),
@@ -855,70 +863,71 @@ theme_blue_strip <- function() {
                                           color = NA))
 }
 
-## define other variables used in gap-products/esrindex code
-n_facet_row <- length(unique(plank.long$group))
-lab_fun <- scales::label_comma
-lab_trim <- FALSE
-lab_digits <- NULL
+# create custom function to plot species
+# testing values
+# data <- indicies
+# sp_name <- "Pollock"
 
-#customize labels for each subplot 
-
-# plot labels
-new_labels.f=c("plank1.Mean"="plankton sp.1","plank2.Mean"="plankton sp.2","plank3.Mean"="plankton sp.3", "plank.Total"="Total Plankton")
-
-##############
-##plot 
-
-tiff("Fig_Plank_2025.tiff", width=7, height=7, units="in", res=600) 
-
-#gapproducts plot -note commented out code for CI ribbons and errorbars has old GAP-products naming conventions;  
-
-ggplot() +
-  #create horizontal lines of long-term mean and +/- 1SD
-  geom_hline(data = TS_sum,
-             mapping = aes(yintercept = mean),
-             color = "black") +
-  geom_hline(data = TS_sum,
-             mapping = aes(yintercept = mean+sd), 
-             linetype = 2,
-             color = "black") +
-  geom_hline(data = TS_sum,
-             mapping = aes(yintercept = mean-sd), 
-             linetype = 2,
-             color = "black") +
-
-  #plot confidence level ribbons or error bars (update data name and variable names pred_lci,obs_lci ) 
-  #geom_ribbon(data = fit_dat,
-  #            mapping = aes(x = year,
-  #                          ymin = pred_lci,
-  #                          ymax = pred_uci),
-  #            alpha = 0.3,
-  #            fill = ribbon_fill) +
-  #geom_errorbar(data = fit_dat,
-  #              mapping = aes(x = year,
-  #                            ymin = obs_lci,
-  #                            ymax = obs_uci), 
-  #              width = 0.5,
-#              color = errorbar_color) +
+plot_ESR_standard <- function(sp_name, data) {
+  dat <- filter(data, species == sp_name) %>%
+    group_by(species, region) %>%
+    complete(sample_year = 2003:year(Sys.Date())) %>%
+    # this is a dumb way to do this but i'm impatient. 
+    mutate(sp_label = ifelse(species == "Pollock", "Age-0 Pollock",
+                             ifelse(species == "Pacific cod", "Age-0 Pacific Cod", species)),
+           labels = paste(region, sp_label)) 
   
-  #plot data points
-geom_line(data = plank.long,mapping = aes(x = Year, y = value),
-          color = "black") +
-  geom_point(data = plank.long,
-             mapping = aes(x = Year, y = value),
-             color = "black") +
-  #axis labels and scales
-  ylab(~paste("Plankton mean biomass (g ∙ ",m^-3,")"))+
-  scale_y_continuous( expand = expansion(mult = c(0, 0.5)), 
-                      labels = lab_fun(trim = lab_trim)) + #if want extra decimal point mult = c(0, 0.05)
-  scale_x_continuous(name = "Year")+#,
-  expand_limits(y = 0) +
-  facet_wrap(~group, 
-             scales = "free",
-             nrow = n_facet_row, labeller = labeller(group = new_labels.f)) + # scales = "free_y"
-  theme_blue_strip()
+  
+  
+  ggplot(data = dat, aes(sample_year, est/1000, group = region)) +
+    # sdmtmb estimates
+    #geom_point(pch = 17, colour = "#0093D0", size = 3) +
+    # sdmtmb error
+    # geom_ribbon(data = dat, aes(sample_year, ymin = lwr/1000, 
+    #                             ymax = upr/1000, group = region), alpha = 0.3) +
+    # connect sequential values
+    geom_line(data = dat, aes(sample_year, est/1000, group = region)) +
+    # sdmtmb estimates + ci
+    geom_pointrange(data = dat, aes(x = sample_year, 
+                                    ymin = lwr/1000, ymax = upr/1000, 
+                                    group = region),
+                    pch = 17, colour = "#0093D0", size = 1) +
+    # rolling mean +/- 1 SD
+    geom_hline(data = dat, aes(yintercept = est_mean/1000, group = region)) +
+    geom_hline(data = dat, aes(yintercept = est_mean/1000 + est_mean_sd/1000, group = region),
+              linetype = 2) +
+    geom_hline(data = dat, aes(yintercept = est_mean/1000 - est_mean_sd/1000, group = region),
+              linetype = 2) +
+    # Dynamic x-axis limits based on CurrentYear
+    scale_x_continuous(limits = c(2003, as.numeric(max(dat$sample_year)) + 1), 
+                       breaks = seq(2003, as.numeric(max(dat$sample_year)) + 1, by = 4)) +
+    labs(x = "Year", y = "Relative biomass (metric tonnes)") +
+    facet_wrap(~labels, scales = "free", nrow = 2) +
+    theme_blue_strip()
+  
+}
 
-dev.off() 
+# Build the plot and assign to an object
+plot_list_standard <- list()
+for(i in 1:length(sp.list)) {
+  sp_name <- sp.list[[i]]
+  plot_list_standard[[i]] <- plot_ESR_standard(sp_name = sp_name, data = indicies)
+}
+
+gridExtra::grid.arrange(grobs = plot_list_standard)
+
+# check to make sure this naming is correct before saving
+names(plot_list_standard) <- c("Capelin_All", "Forage", "Pacific Herring_All", 
+                      "Jellyfish", "Pollock_A0", "Pacific Cod_A0")
+
+# save the standard esr plots
+lapply(1:length(plot_list_standard), 
+       function(x)ggsave(filename = here("Results", paste0(year(Sys.Date()), "_ESR"),
+                                         paste0(names(plot_list_standard)[[x]], 
+                                                "_timeseries_standard_", 
+                                                run_date, ".pdf")),
+                           dpi = 300, height = 5, width = 6.5,
+                         plot = plot_list_standard[[x]]))
 
 ```
 
