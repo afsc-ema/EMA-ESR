@@ -354,13 +354,13 @@ nbs.capelin.fit <- set_fit_TMB(data = ts.list,
                            formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
                            time = "sample_year",
                            offset = "log_effort",
-                           spatial = list("on","on"),
-                           spatiotemporal = list("iid", "iid"),
-                            family = delta_lognormal(link1 = "logit", link2 = "log"),
+                           # spatial = list("on","on"),
+                           # spatiotemporal = list("iid", "iid"),
+                           #family = delta_lognormal(link1 = "logit", link2 = "log"),
                            #family = delta_gamma(link1 = "logit", link2 = "log"),
-                           # family = tweedie(link = "log"),
-                           # spatial = "on",
-                           # spatiotemporal = "iid",
+                           family = tweedie(link = "log"),
+                           spatial = "on",
+                           spatiotemporal = "iid",
                            share_range = TRUE,
                            anisotropy = TRUE
                            )
@@ -929,5 +929,77 @@ lapply(1:length(plot_list_standard),
                            dpi = 300, height = 5, width = 6.5,
                          plot = plot_list_standard[[x]]))
 
+```
+
+
+## capelin prediction comparison
+```{r}
+capelin_lognormal <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Allbinomial_lognormal_fit.RDS"))
+
+capelin_deltagamma <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Allbinomial_Gamma_fit.RDS"))
+
+capelin_tweedie <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Alltweedie_fit.RDS"))
+
+nbs.capelin.grid <- read.csv(here("Results", "2026_ESR", "Prediction_grids", "NBS_prediction-grid.csv"))
+```
+
+predict
+```{r}
+
+capelin.list <- list(capelin_lognormal, capelin_deltagamma, capelin_tweedie)
+names(capelin.list) <- c("lognormal", "deltagamma", "tweedie")
+
+indices <- lapply(capelin.list, function(mod) {
+  preds <- predict(mod, newdata = nbs.capelin.grid, return_tmb_object = TRUE)
+  get_index(preds, bias_correct = TRUE, area = 1)
+  
+})
+
+capelin_indices <- dplyr::bind_rows(indices, .id = "model_name")
+
+# plot it quickly
+capelin_model_compar <- ggplot(data = capelin_indices, aes(x = sample_year, y = est/1000)) +
+        geom_pointrange(aes(ymin = lwr/1000, ymax = upr/1000))+
+        geom_line() +
+        theme_cowplot(12)+
+        ylab(bquote("Relative Biomass Index (metric tonne)"))+
+        labs(title=paste("Capelin - Late Summer/Fall Surface Trawl Surveys"), 
+             x ="Year", cex=3)+
+        theme(legend.position = "right",
+              axis.title = element_text(size = 16),
+              legend.text = element_text(size = 12),
+              legend.title = element_text(size = 16),
+              axis.text = element_text(size = 12),
+              panel.background = element_rect(colour = "black", linewidth=1))+
+        scale_x_continuous(breaks = seq(min(dat$sample_year), max(dat$sample_year), 5)) +
+        scale_color_manual(values=c('#003366','#0099CC')) +
+  facet_wrap(~model_name, scales = "free_y")
+
+# now with constrained y axes to compare pattern
+constrained_capelin_model_compar <- ggplot(data = capelin_indices, aes(x = sample_year, y = est/1000)) +
+        geom_pointrange(aes(ymin = lwr/1000, ymax = upr/1000))+
+        geom_line() +
+        theme_cowplot(12)+
+        ylab(bquote("Relative Biomass Index (metric tonne)"))+
+        labs(title=paste("Capelin - Late Summer/Fall Surface Trawl Surveys"), 
+             x ="Year", cex=3)+
+        theme(legend.position = "right",
+              axis.title = element_text(size = 16),
+              legend.text = element_text(size = 12),
+              legend.title = element_text(size = 16),
+              axis.text = element_text(size = 12),
+              panel.background = element_rect(colour = "black", linewidth=1))+
+        scale_x_continuous(breaks = seq(min(dat$sample_year), max(dat$sample_year), 5)) +
+        ylim(c(0, 500)) +
+        scale_color_manual(values=c('#003366','#0099CC')) +
+  facet_wrap(~model_name, scales = "free_y")
+
+
+# ggsave(plot = constrained_capelin_model_compar,
+#        filename = here("Results", "2026_ESR", "Capelin_All_NBS", "Model_comparison-constrained_axes.png"), width = 12, height = 8)
+# 
+# ggsave(plot = capelin_model_compar,
+#        filename = here("Results", "2026_ESR", "Capelin_All_NBS", "Model_comparison.png"),
+# width = 12, height = 8)
 ```
 
