@@ -25,7 +25,7 @@ Options:
 source("Scripts/helper_fxns/clean_pull_data.R")
 
 # make sure the proper packages are install and loaded
-pkgs <- c("visreg", "sdmTMB", "sf", "concaveman", "cowplot", "gridExtra")
+pkgs <- c("visreg", "sdmTMB", "sf", "concaveman", "cowplot", "gridExtra", "tidyverse", "EMAdownload")
 
 for (pkg in pkgs) {
   if (!require(pkg, character.only = TRUE)) {
@@ -39,12 +39,15 @@ for (pkg in pkgs) {
 
 # bring in data
 ```{r}
-tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 161975, 164711, 162041, 164708, 171672, 171671) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function
+tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 
+          161975, 164711, 162041, 164708, 171672, 171671,
+            # add in the jellyfish tsns (below)
+          50623, 51640, 51641, 51669, 51671, 51695, 51696, 51700, 51701, 51705, 51707, 719327) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function which is dumb but I dont have the energy to fix
 this.year <- 2025
 
 ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "SEBS") %>%
   # this pivot longer wont work if you change the tsns above 
-  pivot_longer(cols = c("Chinook Salmon_J":"Forage"), names_to = "sp_name", values_to = "catch_kg") %>%
+  pivot_longer(cols = c("Chinook Salmon_J":"Jellyfish"), names_to = "sp_name", values_to = "catch_kg") %>%
   add_utm_columns(., ll_names = c("Lon", "Lat"),
                   utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
   mutate(region = "SEBS", 
@@ -54,11 +57,19 @@ ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "SEBS") %>%
 species_names <- unique(ts$sp_name) 
 species_names <- species_names[species_names %in% c("Capelin_All", "Forage", "Pacific Herring_All",
                                                    "Pollock_A0")]
-ts <- filter(ts, sp_name %in% species_names) %>%
-  filter(!(is.na(effort))) # drop any stations that have NA for effort
+ts2 <- filter(ts, sp_name %in% species_names) %>%
+  filter(!(is.na(effort))) %>% # drop any stations that have NA for effort
+  mutate(log_effort = log(effort)) %>%
+  group_by(region, sp_name) %>%
+  mutate(median_doy = median(doy),
+         scale_doy = doy - median_doy,
+         mean_doy = mean(doy),
+         sd_doy = sd(doy),
+         scale_doy2 = (doy - mean_doy)/sd_doy,
+         scaled_median = (median_doy - mean_doy) / sd_doy)
 
 # datalist just by the species name so includes region for both within a specis
-ts.list <- split(ts, list(ts$sp_name))
+ts.list <- split(ts2, list(ts$sp_name))
 ```
 
 divide the data into just the sebs capelin dataframe
@@ -73,12 +84,12 @@ mesh.sebs.red <- make_mesh(ts.capelin.red,
             xy_cols = c("X", "Y"),
             n_knots = 200)
 
-mesh.sebs <- make_mes(ts.capelin, 
+mesh.sebs <- make_mesh(ts.capelin, 
                       xy_cols = c("X", "Y"), 
                       n_knots = 200)
 
-ts.capelin.red$log_effort <- log(ts.capelin.red$effort)
-ts.capelin$log_effort <- log(ts.capelin$effort)
+# ts.capelin.red$log_effort <- log(ts.capelin.red$effort)
+# ts.capelin$log_effort <- log(ts.capelin$effort)
 ts.capelin.red$fct_year <- as.factor(ts.capelin.red$sample_year)
 
 # group data by years rather than grouping regardless of years
@@ -322,5 +333,179 @@ capelin.index.red %>%
 # in general the random walk model provides an estimate for 2016 (which is 0) but pushes the estimes around the peak capelin years up and reduces the variability given the extra information that contributing to the estimate (years before/after).
 #' the reduced model has larger ci for the years where capelin peaked because of how intermittant they were encounterd. High encounter rate or none at all. boom/bust situation. 
 #' Overall based on the cross validation it is slightly better to use the reduced model over the random wlak. 
+```
+
+## capelin index comparison
+```{r}
+capelin_lognormal <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Allbinomial_lognormal_fit.RDS"))
+
+capelin_deltagamma <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Allbinomial_Gamma_fit.RDS"))
+
+capelin_tweedie <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Alltweedie_fit.RDS"))
+
+nbs.capelin.grid <- read.csv(here("Results", "2026_ESR", "Prediction_grids", "NBS_prediction-grid.csv"))
+```
+
+predict
+```{r}
+
+capelin.list <- list(capelin_lognormal, capelin_deltagamma, capelin_tweedie)
+names(capelin.list) <- c("lognormal", "deltagamma", "tweedie")
+
+indices <- lapply(capelin.list, function(mod) {
+  preds <- predict(mod, newdata = nbs.capelin.grid, return_tmb_object = TRUE)
+  get_index(preds, bias_correct = TRUE, area = 1)
+  
+})
+
+capelin_indices <- dplyr::bind_rows(indices, .id = "model_name")
+
+# plot it quickly
+capelin_model_compar <- ggplot(data = capelin_indices, aes(x = sample_year, y = est/1000)) +
+        geom_pointrange(aes(ymin = lwr/1000, ymax = upr/1000))+
+        geom_line() +
+        theme_cowplot(12)+
+        ylab(bquote("Relative Biomass Index (metric tonne)"))+
+        labs(title=paste("Capelin - Late Summer/Fall Surface Trawl Surveys"), 
+             x ="Year", cex=3)+
+        theme(legend.position = "right",
+              axis.title = element_text(size = 16),
+              legend.text = element_text(size = 12),
+              legend.title = element_text(size = 16),
+              axis.text = element_text(size = 12),
+              panel.background = element_rect(colour = "black", linewidth=1))+
+        scale_x_continuous(breaks = seq(min(dat$sample_year), max(dat$sample_year), 5)) +
+        scale_color_manual(values=c('#003366','#0099CC')) +
+  facet_wrap(~model_name, scales = "free_y")
+
+# now with constrained y axes to compare pattern
+constrained_capelin_model_compar <- ggplot(data = capelin_indices, aes(x = sample_year, y = est/1000)) +
+        geom_pointrange(aes(ymin = lwr/1000, ymax = upr/1000))+
+        geom_line() +
+        theme_cowplot(12)+
+        ylab(bquote("Relative Biomass Index (metric tonne)"))+
+        labs(title=paste("Capelin - Late Summer/Fall Surface Trawl Surveys"), 
+             x ="Year", cex=3)+
+        theme(legend.position = "right",
+              axis.title = element_text(size = 16),
+              legend.text = element_text(size = 12),
+              legend.title = element_text(size = 16),
+              axis.text = element_text(size = 12),
+              panel.background = element_rect(colour = "black", linewidth=1))+
+        scale_x_continuous(breaks = seq(min(dat$sample_year), max(dat$sample_year), 5)) +
+        ylim(c(0, 500)) +
+        scale_color_manual(values=c('#003366','#0099CC')) +
+  facet_wrap(~model_name, scales = "free_y")
+
+
+# ggsave(plot = constrained_capelin_model_compar,
+#        filename = here("Results", "2026_ESR", "Capelin_All_NBS", "Model_comparison-constrained_axes.png"), width = 12, height = 8)
+# 
+# ggsave(plot = capelin_model_compar,
+#        filename = here("Results", "2026_ESR", "Capelin_All_NBS", "Model_comparison.png"),
+# width = 12, height = 8)
+```
+
+So clearly these indicies produce very different estimates
+Lukas thinks that the tweedie distribution might be too computationally intensive and then is having some issues estimating parameters esp for the years with not a ton of data. 
+
+To determine which one has the best model form we're going to take the reduced data set and
+fit it with cross validation for all three forms. 
+
+## family cross validation
+```{r}
+TMB::openmp(n = 1)
+# do cross validation four times, first with the full dataset then with the reduced dataset
+# set up paralell processing
+future::plan(future::multisession, workers = 4)
+tweedie_cv <- sdmTMB_cv(data = ts.capelin.red, 
+            # right now estimating each yuear as a fixed effect
+            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            offset = "log_effort",
+            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
+            time = "sample_year",
+            mesh = mesh.sebs.red, 
+            spatiotemporal = "iid",
+            spatial = "on",
+            family = tweedie(link = "log"),
+            share_range = TRUE, # default for sdmTMB
+            # for the bering sea anisotropy important given the patterns across the shelf. 
+            anisotropy = TRUE,
+            fold_ids = fold_vector2)
+
+
+deltagam_cv <- sdmTMB_cv(data = ts.capelin.red, 
+            # right now estimating each yuear as a fixed effect
+            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            offset = "log_effort",
+            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
+            time = "sample_year",
+            mesh = mesh.sebs.red, 
+            spatiotemporal = list("iid","iid"),
+            spatial = list("on","on"),
+            family = delta_gamma(link1 = "logit", link2 = "log"),
+            share_range = TRUE, # default for sdmTMB
+            # for the bering sea anisotropy important given the patterns across the shelf. 
+            anisotropy = TRUE,
+            fold_ids = fold_vector2)
+
+deltalog_cv <- sdmTMB_cv(data = ts.capelin.red, 
+            # right now estimating each yuear as a fixed effect
+            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            offset = "log_effort",
+            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
+            time = "sample_year",
+            mesh = mesh.sebs.red, 
+            spatiotemporal = list("iid","iid"),
+            spatial = list("on","on"),
+            family = delta_lognormal(link1 = "logit", link2 = "log"),
+            share_range = TRUE, # default for sdmTMB
+            # for the bering sea anisotropy important given the patterns across the shelf. 
+            anisotropy = TRUE,
+            fold_ids = fold_vector2)
+
+```
+
+```{r}
+model.list <- list(tweedie_cv, deltagam_cv, deltalog_cv)
+names(model.list) <- c("tweedie_cv", "deltagam_cv", "deltalog_cv")
+
+# need to create dataframe with the loglike and rsme
+df <- data.frame()
+rmse <- data.frame()
+
+for(i in 1:length(model.list)) {
+  mod <- model.list[[i]]
+  
+  # whole dataset values
+  tmp <- data.frame(
+    model_cv = names(model.list)[[i]],
+    sum_loglike = mod$sum_loglik,
+    mean_loglike = mod$sum_loglik/nrow(mod$data),
+    total_rmse = sqrt(mean((mod$data$catch_kg - mod$data$cv_predicted)^2))
+  )
+  
+  # by the folds
+  tmp2 <- dplyr::group_by(mod$data, cv_fold) |> 
+  dplyr::summarize(
+    model_cv = names(model.list)[[i]],
+    mae = mean(abs(catch_kg - cv_predicted)),
+    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
+  
+  df <- rbind(df, tmp)
+  rmse <- rbind(rmse, tmp2)
+}
+
+# we want to have a higher logliklihood and lower rmse
+# because it neg log lik it'll be the one closer to 0
+arrange(df, -sum_loglike)
+arrange(df, -mean_loglike)
+arrange(df, total_rmse)
+
+# in general from the loglike and total rmse it looks like the delta gama is better
+
+# reduced datasnum()# reduced dataset
+ggplot() +
+  geom_line(aes(x = cv_fold, rmse, color = model_cv), data = rmse)
 ```
 
