@@ -345,7 +345,7 @@ nbs.herring.fit <- set_fit_TMB(data = ts.list,
                                 anisotropy = TRUE
                                 ) 
 
-# based on the capelin_sdmtmb_cv script we decided that the delta gamma is a better model
+# based on the capelin_sdmtmb_cv script we decided that the delta lognormal is a better model
 nbs.capelin.fit <- set_fit_TMB(data = ts.list, 
                            survey_region = "NBS", 
                            sp_name = "Capelin_All", 
@@ -357,8 +357,8 @@ nbs.capelin.fit <- set_fit_TMB(data = ts.list,
                            offset = "log_effort",
                            spatial = list("on","on"),
                            spatiotemporal = list("iid", "iid"),
-                           #family = delta_lognormal(link1 = "logit", link2 = "log"),
-                           family = delta_gamma(link1 = "logit", link2 = "log"),
+                           family = delta_lognormal(link1 = "logit", link2 = "log"),
+                           # family = delta_gamma(link1 = "logit", link2 = "log"),
                            # family = tweedie(link = "log"),
                            # spatial = "on",
                            # spatiotemporal = "iid",
@@ -446,7 +446,7 @@ sebs.herring.fit <- set_fit_TMB(data = ts.list,
                            anisotropy = TRUE
                            )
 
-## fit model without 2016 
+## fit model without 2016, the family and reduced dataset were based on cv in capelin_sdmTMB_cv.rmd
 sebs.capelin.fit.red <- set_fit_TMB(data = ts.list, 
                            survey_region = "SEBS", 
                            sp_name = "Capelin_All", 
@@ -772,9 +772,9 @@ indicies <- bind_rows(index_results) %>%
 # if they need to be loaded can be done here
 # include the correct date of the version of relative abundance  you want to use
 correct.date <- "2026-07-24" # most recent run
-indicies <- #indicies %>%
-  read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
-              paste0("Index_rel_biomass_", correct.date, ".csv"))) %>%
+indicies <- indicies %>%
+  # read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
+  #             paste0("Index_rel_biomass_", correct.date, ".csv"))) %>%
   group_by(region, species) %>%
   complete(sample_year = 2003:year(Sys.Date())) %>%
   ungroup() %>%
@@ -820,7 +820,7 @@ for(i in 1:length(sp.list)) {
 
 gridExtra::grid.arrange(grobs = plot_list)
 
-
+plot_list[[1]]
 # check to make sure this naming is correct before saving
 names(plot_list) <- c("Capelin_All", "Forage", "Pacific Herring_All", 
                       "Jellyfish", "Pollock_A0", "Pacific Cod_A0")
@@ -829,7 +829,8 @@ names(plot_list) <- c("Capelin_All", "Forage", "Pacific Herring_All",
 lapply(1:length(plot_list), 
        function(x)ggsave(filename = here("Results", paste0(year(Sys.Date()), "_ESR"),
                                          paste0(names(plot_list)[[x]], 
-                                                fam_label, "_timeseries_", run_date, ".pdf")),
+                                                #fam_label, 
+                                                "_timeseries_", Sys.Date(), ".pdf")),
                            dpi = 300, height = 5, width = 6.5,
                          plot = plot_list[[x]]))
 

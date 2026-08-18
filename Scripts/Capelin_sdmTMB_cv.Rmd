@@ -335,7 +335,7 @@ capelin.index.red %>%
 #' Overall based on the cross validation it is slightly better to use the reduced model over the random wlak. 
 ```
 
-## capelin index comparison
+# capelin index comparison
 ```{r}
 capelin_lognormal <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Allbinomial_lognormal_fit.RDS"))
 
@@ -343,7 +343,7 @@ capelin_deltagamma <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "20
 
 capelin_tweedie <- readRDS(here("Results", "2026_ESR", "Capelin_All_NBS", "2026-07-24", "Capelin_Alltweedie_fit.RDS"))
 
-nbs.capelin.grid <- read.csv(here("Results", "2026_ESR", "Prediction_grids", "NBS_prediction-grid.csv"))
+nbs.capelin.grid <- read.csv(here("Results", "2026_ESR", "Prediction_grids", "NBS_Caplein_All_prediction-grid.csv"))
 ```
 
 predict
@@ -412,7 +412,7 @@ Lukas thinks that the tweedie distribution might be too computationally intensiv
 To determine which one has the best model form we're going to take the reduced data set and
 fit it with cross validation for all three forms. 
 
-## family cross validation
+## SEBS family cross validation
 ```{r}
 TMB::openmp(n = 1)
 # do cross validation four times, first with the full dataset then with the reduced dataset
@@ -466,6 +466,7 @@ deltalog_cv <- sdmTMB_cv(data = ts.capelin.red,
 
 ```
 
+
 ```{r}
 model.list <- list(tweedie_cv, deltagam_cv, deltalog_cv)
 names(model.list) <- c("tweedie_cv", "deltagam_cv", "deltalog_cv")
@@ -509,3 +510,116 @@ ggplot() +
   geom_line(aes(x = cv_fold, rmse, color = model_cv), data = rmse)
 ```
 
+## NBS capelin family cv
+get the correct data
+```{r}
+ts.nbs.capelin <- filter(ts.list[["Capelin_All"]], region == "NBS")
+
+nbs.capelin.grid <- read.csv(here("Results", "2026_ESR", "Prediction_grids", "NBS_Capelin_All_prediction-grid.csv"))
+
+mesh.nbs <- make_mesh(ts.nbs.capelin, 
+                      xy_cols = c("X", "Y"), 
+                      n_knots = 200)
+
+fold_vector_nbs <- as.numeric(as.factor(ts.nbs.capelin$sample_year))
+```
+
+
+```{r}
+TMB::openmp(n = 1)
+# do cross validation four times, first with the full dataset then with the reduced dataset
+# set up paralell processing
+future::plan(future::multisession, workers = 4)
+tweedie_cv <- sdmTMB_cv(data = ts.nbs.capelin, 
+            # right now estimating each yuear as a fixed effect
+            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            offset = "log_effort",
+            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
+            time = "sample_year",
+            mesh = mesh.nbs, 
+            spatiotemporal = "iid",
+            spatial = "on",
+            family = tweedie(link = "log"),
+            share_range = TRUE, # default for sdmTMB
+            # for the bering sea anisotropy important given the patterns across the shelf. 
+            anisotropy = TRUE,
+            fold_ids = fold_vector_nbs)
+
+
+deltagam_cv <- sdmTMB_cv(data = ts.nbs.capelin, 
+            # right now estimating each yuear as a fixed effect
+            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            offset = "log_effort",
+            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
+            time = "sample_year",
+            mesh = mesh.nbs, 
+            spatiotemporal = list("iid","iid"),
+            spatial = list("on","on"),
+            family = delta_gamma(link1 = "logit", link2 = "log"),
+            share_range = TRUE, # default for sdmTMB
+            # for the bering sea anisotropy important given the patterns across the shelf. 
+            anisotropy = TRUE,
+            fold_ids = fold_vector_nbs)
+
+deltalog_cv <- sdmTMB_cv(data = ts.nbs.capelin, 
+            # right now estimating each yuear as a fixed effect
+            catch_kg ~ 0 + as.factor(sample_year) + scale_doy,
+            offset = "log_effort",
+            # if we wanted this to be random walk intercepts for year fct (time_varying = ~1)
+            time = "sample_year",
+            mesh = mesh.nbs, 
+            spatiotemporal = list("iid","iid"),
+            spatial = list("on","on"),
+            family = delta_lognormal(link1 = "logit", link2 = "log"),
+            share_range = TRUE, # default for sdmTMB
+            # for the bering sea anisotropy important given the patterns across the shelf. 
+            anisotropy = TRUE,
+            fold_ids = fold_vector_nbs)
+```
+
+```{r}
+model.list <- list(tweedie_cv, deltagam_cv, deltalog_cv)
+names(model.list) <- c("tweedie_cv", "deltagam_cv", "deltalog_cv")
+
+# need to create dataframe with the loglike and rsme
+df <- data.frame()
+rmse <- data.frame()
+
+for(i in 1:length(model.list)) {
+  mod <- model.list[[i]]
+  
+  # whole dataset values
+  tmp <- data.frame(
+    model_cv = names(model.list)[[i]],
+    sum_loglike = mod$sum_loglik,
+    mean_loglike = mod$sum_loglik/nrow(mod$data),
+    total_rmse = sqrt(mean((mod$data$catch_kg - mod$data$cv_predicted)^2))
+  )
+  
+  # by the folds
+  tmp2 <- dplyr::group_by(mod$data, cv_fold) |> 
+  dplyr::summarize(
+    model_cv = names(model.list)[[i]],
+    mae = mean(abs(catch_kg - cv_predicted)),
+    rmse = sqrt(mean((catch_kg - cv_predicted)^2)))
+  
+  df <- rbind(df, tmp)
+  rmse <- rbind(rmse, tmp2)
+}
+
+# we want to have a higher logliklihood and lower rmse
+# because it neg log lik it'll be the one closer to 0
+arrange(df, -sum_loglike) # the sum loglik looks like delta lognormal better
+arrange(df, -mean_loglike) # same with the mean loglike delta lognormal
+arrange(df, total_rmse) # tweedie SLIGHTLY reduces the total rmse from deltalognormal
+
+# look at the rmse across the folds
+ggplot() +
+  geom_line(aes(x = cv_fold, rmse, color = model_cv), alpha = 0.7, linewidth = 2, data = rmse)
+
+# looks like the delta logrnomal and the delta gam perform similarly across the folds.
+# everyone does bad with sparse data. 
+```
+
+sebs - delta gamma
+nbs - delta lognormal
