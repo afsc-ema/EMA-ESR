@@ -2,6 +2,8 @@
 *parameter_estimates.RData
 VAST_Outputs/
 .RDataTmp*
+# remove 2025 bc those were messing around with code set up not a real contribution
+Results/2025_ESR
 
 # History files
 .Rhistory
