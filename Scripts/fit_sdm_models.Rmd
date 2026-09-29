@@ -5,6 +5,15 @@ date: "2026-06-25"
 editor_options: 
   chunk_output_type: console
 ---
+How to use this script: 
+
+This assumes basic understanding of how to run rscripts and basic troubleshoot
+
+There are several custom wrapper functions around sdmTMB functions that help reduce redundant coding when fitting the sdmTMB models and creating prediction grids to speed up a little bit the model runs. We also pull in a function that cleans up and orients the data pulled from EMAdownload/akfin 
+
+initial model distribution exploration - documented using up to 2025 in "model_checking" [spreadsheet](https://docs.google.com/spreadsheets/d/1kzTcIrjayFzYJd6h0OKnvfgTxYR9kGMILWFcsTYaFiI/edit?gid=0#gid=0)
+
+
 
 Pull in fxns
 ```{r}
@@ -27,6 +36,15 @@ for (pkg in pkgs) {
 }
 ```
 
+manual - if not all data can be pulled from akfin 
+```{r}
+# tmp_nbs <- read.csv("tmp_data/2026_nbs_survey_biomass.csv", check.names = FALSE) %>%
+#   mutate(haul_date = as.Date(haul_date),
+#          eq_time = lubridate::ymd_hms(eq_time))
+#tmp_sebs <- read.csv()
+```
+
+
 # Pull in data
 ```{r}
 tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209, 
@@ -35,23 +53,56 @@ tsns <- c(934083, 161979, 162035, 161980, 161976, 161977, 551209,
           50623, 51640, 51641, 51669, 51671, 51695, 51696, 51700, 51701, 51705, 51707, 719327) # right now as i have this set up the tsns have to be these. Otherwise i need to adjust how they are combined in the clean_pull_data function which is dumb but I dont have the energy to fix
 
 # adjust to the current year
-this.year <- 2025
+this.year <- 2026
 
-nbs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "NBS") %>%
-  # this pivot longer wont work if you change the tsns above 
-  pivot_longer(cols = c("Chinook Salmon_J":"Jellyfish"), names_to = "sp_name", values_to = "catch_kg") %>%
+nbs <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "NBS")
+
+if(exists("tmp_nbs", envir = .GlobalEnv)) {
+  nbs.ts <- bind_rows(nbs, tmp_nbs) %>%
+    # this pivot longer wont work if you change the tsns above 
+  pivot_longer(cols = -c(station_id, sample_year, cruise_id, haul_date, eq_time,
+                         eq_latitude, eq_longitude, effort, effort_units, Lat, Lon, doy), 
+               names_to = "sp_name", values_to = "catch_kg") %>%
   add_utm_columns(., ll_names = c("Lon", "Lat"),
                   utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
   mutate(region = "NBS",
          crs = 32603)
+} else {
+  nbs.ts <- nbs %>%
+    # this pivot longer wont work if you change the tsns above 
+  pivot_longer(cols = -c(station_id, sample_year, cruise_id, haul_date, eq_time,
+                         eq_latitude, eq_longitude, effort, effort_units, Lat, Lon, doy), 
+               names_to = "sp_name", values_to = "catch_kg") %>%
+  add_utm_columns(., ll_names = c("Lon", "Lat"),
+                  utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
+  mutate(region = "NBS",
+         crs = 32603)
+}
 
-sebs.ts <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "SEBS") %>%
+### NOW SEBS ###
+sebs <- pull_clean_catch(this.year = this.year, tsns = tsns, region = "SEBS")
+
+if(exists("tmp_sebs", envir = .GlobalEnv)) {
+  sebs.ts <- bind_rows(sebs, tmp_sebs) %>%
   # this pivot longer wont work if you change the tsns above 
-  pivot_longer(cols = c("Chinook Salmon_J":"Jellyfish"), names_to = "sp_name", values_to = "catch_kg") %>%
+  pivot_longer(cols = -c(station_id, sample_year, cruise_id, haul_date, eq_time,
+                         eq_latitude, eq_longitude, effort, effort_units, Lat, Lon, doy), 
+               names_to = "sp_name", values_to = "catch_kg") %>%
   add_utm_columns(., ll_names = c("Lon", "Lat"),
                   utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
   mutate(region = "SEBS", 
          crs = 32602)
+} else {
+  sebs.ts <- sebs %>%
+    # this pivot longer wont work if you change the tsns above 
+  pivot_longer(cols = -c(station_id, sample_year, cruise_id, haul_date, eq_time,
+                         eq_latitude, eq_longitude, effort, effort_units, Lat, Lon, doy),
+               names_to = "sp_name", values_to = "catch_kg") %>%
+  add_utm_columns(., ll_names = c("Lon", "Lat"),
+                  utm_names = c("X", "Y"), ll_crs = 4326, units = "km") %>%
+  mutate(region = "SEBS", 
+         crs = 32602)
+}
 
 # glimpse(nbs.ts)
 # glimpse(sebs.ts)
@@ -99,6 +150,7 @@ Things to look for -
 table(is.na(ts.red$catch_kg)) # none
 table(ts.red$catch_kg < 0) # none
 table(is.na(ts.red$effort)) # any NAs in effort need to be removed
+table(is.na(ts.red$doy))
 
 forage <- ts.list[["Forage"]]
 pol <- ts.list[["Pollock_A0"]]
@@ -131,9 +183,16 @@ table(jelly$catch_kg > 0, jelly$sample_year, jelly$region)
 #' Pcod NBS will need a hurdle model probably with a random walk for years, SEBS try out a tweedie but then can come back to a hurdle if needed
 #' Jellyfish: tweedie
 
-print(pol %>% filter(region == "NBS",
+print(pol %>% filter(region == "SEBS",
                catch_kg > 0) %>%
-  count(sample_year), n = 21)
+  count(sample_year), n = 23)
+pol %>%
+  filter(sample_year > 2009) %>%
+  ggplot() +
+  geom_jitter(aes(sample_year, catch_kg)) +
+  geom_boxplot(aes(sample_year, catch_kg, group = sample_year)) 
+
+pol.sebs <- filter(pol, region == "SEBS")
 ```
 
 
@@ -418,7 +477,7 @@ sebs.pollock.fit <- set_fit_TMB(data = ts.list,
                            survey_region = "SEBS", 
                            sp_name = "Pollock_A0", 
                            run_fast = FALSE,
-                           n_x = 100,
+                           n_x = 95,
                            
                            formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
                            time = "sample_year",
@@ -502,7 +561,7 @@ TMB::openmp(n = 1)  # goes back to only one cores
 read in models if you've already run them but want to evaluate or look at the model objects
 
 ```{r eval=FALSE, include=FALSE}
-run_date <- "2026-07-24"
+run_date <- "2026-09-24"
 
 # need to add in family of final model you want to pull in
 
@@ -513,12 +572,12 @@ run_date <- "2026-07-24"
 # nbs.herring.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Herring_All_NBS",
 #                                run_date, "Pacific Herring_Alltweedie_fit.RDS"))
 # nbs.capelin.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Capelin_All_NBS",
-#                                run_date, "Capelin_Alltweedie_fit.RDS"))
+#                                run_date, "Capelin_Allbinomial_lognormal_fit.RDS"))
 # nbs.jellyfish.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Jellyfish_NBS",
 #                                run_date, "Jellyfishtweedie_fit.RDS"))
 # nbs.pcod.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pacific Cod_A0_NBS",
 #                                run_date, "Pacific Cod_A0tweedie_fit.RDS"))
-# 
+# # 
 # sebs.forage.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Forage_SEBS",
 #                                run_date, "Foragetweedie_fit.RDS"))
 # sebs.pollock.fit <- readRDS(here("Results", paste0(year(Sys.Date()), "_ESR"), "Pollock_A0_SEBS",
@@ -552,11 +611,28 @@ names(model.list) <- c("nbs.forage", "nbs.pollock", "nbs.herring", "nbs.capelin"
 
 ```
 
+### gradient check
+```{r}
 
+check_gradient <- function(model) {
+  if(any(model$gradients > 0.0005)){
+    print(paste("model has too large of a gradient:", names(model)))
+  } else {
+    print("model passes gradient check")
+  }
+}
+
+for(i in 1:length(model.list)) {
+  print(names(model.list)[[i]])
+  check_gradient(model.list[[i]])
+}
+```
+
+### dharma resid plots
 this takes longer to run since i'm simulating 500 times to then extract dharma residuals.
 ```{r}
 # include run_date if you are loading models that were run a different day than today
-# run_date <- "2026-07-24"
+run_date <- "2026-09-28"
 # create a list of data sep by sp and region based on the original input to the fit sdmtMBs
 tmp <- dplyr::bind_rows(ts.list)
 ts.list.region <- split(tmp, list(tmp$sp_name, tmp$region))
@@ -578,6 +654,10 @@ residual.df <- list()
 
 
 for(name in names(model.list)) {
+  if(exists("run_date", envir = .GlobalEnv)) {
+  } else {
+    stop("no run date in environment")
+  }
   mod <- model.list[[name]]
   df <- ts.list.region[[name]]
   
@@ -647,11 +727,11 @@ generally doing a spot check of this is good.
 ```{r eval=FALSE, include=FALSE}
 residual.plots[[1]] 
 sanity(nbs.forage.fit)
-print(tidy(nbs.forage.fit, effects = "fixed"), n = 22) # pretty good
+print(tidy(nbs.forage.fit, effects = "fixed"), n = 23) # pretty good
 tidy(nbs.forage.fit, effects = "ran_pars")
 residual.plots[[2]]
 sanity(nbs.pollock.fit)
-print(tidy(nbs.pollock.fit, effects = "fixed"), n = 22) # std.errors look okay
+print(tidy(nbs.pollock.fit, effects = "fixed"), n = 23) # std.errors look okay
 tidy(nbs.pollock.fit, effects = "ran_pars")
 residual.plots[[3]] # this looks good
 residual.plots[[4]] # this isn't my fav - switching to delta-lognormal with iid & spatial on x2
@@ -659,7 +739,9 @@ residual.plots[[5]] # not so nice variation fro the tweedie distribution, should
 residual.plots[[6]] # same
 residual.plots[[7]] # looks good for a hurdle model
 residual.plots[[8]] # not bad not great
-
+residual.plots[[9]]
+residual.plots[[10]]
+residual.plots[[11]]
 
 # spatial residauls, looking for clustering of similar direction poitns,
 # used scaled residuals from the dharma object
@@ -671,6 +753,10 @@ spatial.plots[[5]]
 spatial.plots[[6]] # sebs pollock, maybe some negative residuals in the northern part of the survey early on? Part of that is the disappearance of the cold pool? 
 spatial.plots[[7]]
 spatial.plots[[8]]
+spatial.plots[[9]]
+spatial.plots[[10]]
+spatial.plots[[11]]
+
 ```
 
 
@@ -732,6 +818,7 @@ predict_index <- function(model.name, model.list, model_options = model.opts) {
   # i.e. the relative metric tonnes for the area (rather than the absolute for the whole area).
   # if you wanted absolute biomass than you'd use the grid cell size^2 (i believe 10e3 - so 
   # 10e3 ^2 or 100e3 m2 or 100 km2
+  # its like saying eh the area of the prediction grid doesn't really matter because we're only interested in what is relative to other years within the model so just assume its 1. Which works as long as the grid cells are standardize to the same size across the prediction grid
   
   # column with model name
   index$model <- model.name
@@ -763,10 +850,10 @@ indicies <- bind_rows(index_results) %>%
 # write.csv(indicies, here("Results",
 #                          paste0(year(Sys.Date()), "_ESR"),
 #                          paste0("Index_rel_biomass_", Sys.Date(), ".csv")), row.names = F)
-# TMB::openmp(n = 1) 
+TMB::openmp(n = 1)
 ```
 
-# plot the ESR indicies
+# plot the ESR indicies - non standardized
 
 ```{r}
 # if they need to be loaded can be done here
@@ -864,6 +951,17 @@ theme_blue_strip <- function() {
           strip.background = element_rect(fill = "#0055a4",
                                           color = NA))
 }
+
+correct.date <- "2026-09-28" # most recent run
+indicies <- indicies %>%
+  # read.csv(here("Results", paste0(year(Sys.Date()), "_ESR"),
+  #             paste0("Index_rel_biomass_", correct.date, ".csv"))) %>%
+  group_by(region, species) %>%
+  complete(sample_year = 2003:year(Sys.Date())) %>%
+  ungroup() %>%
+  filter(model != "nbs.pcod") # remove this becasue it doesn't converge
+
+sp.list <- unique(indicies$species)
 
 # create custom function to plot species
 # testing values
