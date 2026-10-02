@@ -109,13 +109,6 @@ if(exists("tmp_sebs", envir = .GlobalEnv)) {
 # combine and then split
 ts <- rbind(sebs.ts, nbs.ts) # crs for NBS is 32603, SEBS is 32602
   
-# get the species names in a vector, there are 31, but we're only interested in a few for the ESRs 
-species_names <- unique(ts$sp_name) 
-species_names <- species_names[species_names %in% c("Capelin_All", "Forage", "Pacific Herring_All",
-                                                   "Pollock_A0", "Pacific Cod_A0", "Jellyfish")]
-ts <- filter(ts, sp_name %in% species_names) %>%
-  filter(!(is.na(effort))) # drop any stations that have NA for effort, right now drops 5
-
 ts <- mutate(ts, log_effort = log(effort)) %>%
   group_by(region, sp_name) %>%
   mutate(median_doy = median(doy),
@@ -123,13 +116,21 @@ ts <- mutate(ts, log_effort = log(effort)) %>%
          mean_doy = mean(doy),
          sd_doy = sd(doy),
          scale_doy2 = (doy - mean_doy)/sd_doy,
-         scaled_median = (median_doy - mean_doy) / sd_doy)
+         scaled_median = (median_doy - mean_doy) / sd_doy) %>%
+  filter(!(is.na(effort))) # drop any stations with NA for effort
+
+# get the species names in a vector, there are 31, but we're only interested in a few for the ESRs 
+species_names <- unique(ts$sp_name) 
+species_names <- species_names[species_names %in% c("Capelin_All", "Forage", "Pacific Herring_All",
+                                                   "Pollock_A0", "Pacific Cod_A0", "Jellyfish")]
+ts2 <- filter(ts, sp_name %in% species_names)
+
 
 # remove the 2016 year for capelin and 2003 for jellyfish (no jellyfish recorded in 2003)
 # remove an instance where the pcod caught in 2012 at a station wasn't weighed and so uses a placeholder of -999
 # also tried to remove 0 catch years for pcod in NBS to get model to converge but honestly that 
 # model sucks and shouldn't be used. 
-ts.red <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All" & sample_year == 2016),
+ts.red <- filter(ts2, !(region == "SEBS" & sp_name == "Capelin_All" & sample_year == 2016),
                      !(region %in% c("NBS", "SEBS") & sp_name == "Jellyfish" & sample_year == 2003),
                      !(region == "NBS" & sp_name == "Pacific Cod_A0" & 
                          sample_year %in% c(2003, 2008,2009, 2010,2014, 2018)),
@@ -138,7 +139,7 @@ ts.red <- filter(ts, !(region == "SEBS" & sp_name == "Capelin_All" & sample_year
 
 # datalist just by the species name so includes region for both within a specis
 ts.list <- split(ts.red, list(ts.red$sp_name))
-
+ts.test <- split(ts, list(unique(ts$sp_name)))
 ```
 
 ## understand the catch / encounter data for each region and species
@@ -554,6 +555,22 @@ sebs.pcod.fit <- set_fit_TMB(data = ts.list,
                                  anisotropy = TRUE
                                  )
 
+sebs.sock.fit <- set_fit_TMB(data = ts.test,
+                                 survey_region = "SEBS",
+                                 sp_name = "Sockeye Salmon_J",
+                                 run_fast = FALSE,
+                                 n_x = 200,
+                                 
+                                 formula = catch_kg ~ 0 + scale_doy2 + as.factor(sample_year),
+                                 time = "sample_year",
+                                 offset = "log_effort",
+                                 family = tweedie(link = "log"),
+                                 spatial = "on",
+                                 spatiotemporal = "iid",
+                                 share_range = TRUE,
+                                 anisotropy = TRUE
+                                 )
+
 TMB::openmp(n = 1)  # goes back to only one cores
 ```
 
@@ -773,6 +790,12 @@ model.opts <- data.frame(sp_name = c("Forage","Pollock_A0", "Pacific Herring_All
 # maybe best to remove the nbs pcod model
 model.list[["nbs.pcod"]] <- NULL
 
+## this was cause i needed to know what the annual sock pattern was not used in esr
+model.opts <- data.frame(sp_name = c("Sockeye Salmon_J"),
+                         model_names = c("sock"))
+model.list <- list(sebs.sock.fit)
+names(model.list) <- c("sebs.sock")
+
 #predict & extract indicies
 predict_index <- function(model.name, model.list, model_options = model.opts) {
   mod <- model.list[[model.name]]
@@ -845,6 +868,15 @@ indicies <- bind_rows(index_results) %>%
   group_by(model) %>%
   mutate(est_mean = mean(est),
          est_mean_sd = sd(est))
+
+# index_results2 <- map(names(model.list),
+#                       ~ predict_index(model.name = .x, model.list = model.list)) %>%
+#   bind_rows(.) %>%
+#   group_by(model) %>%
+#   mutate(est_mean =  mean(est),
+#          est_mean_sd = sd(est),
+#          region = "SEBS",
+#          species = "Sockeye Salmon")
 
 # once we determine which capelin model is correct add it into the indicies df
 # write.csv(indicies, here("Results",
@@ -1019,6 +1051,8 @@ gridExtra::grid.arrange(grobs = plot_list_standard)
 # check to make sure this naming is correct before saving
 names(plot_list_standard) <- c("Capelin_All", "Forage", "Pacific Herring_All", 
                       "Jellyfish", "Pollock_A0", "Pacific Cod_A0")
+
+#names(plot_list_standard) <- c("Sockeye salmon_J")
 
 # save the standard esr plots
 lapply(1:length(plot_list_standard), 
