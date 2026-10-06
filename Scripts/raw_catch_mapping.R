@@ -52,8 +52,12 @@ bathline.xyz <- as.xyz(bathline)
 ### --- READ IN DATA --- ###
 #tax <- get_ema_taxonomy() # get correct tsn 934083
 pollock <- join_event_catch(start_year = this.year, end_year = this.year,
-                 survey_region = c("NBS", "SEBS"), tsn = 934083, 
+                 survey_region = c("NBS", "SEBS"), tsn = 934083,
                  lhs = "A0", gear = "CAN", trawl_method = "S", catch0 = T)
+# pollock <- join_event_catch(start_year = this.year, end_year = this.year,
+#                             survey_region = c("NBS", "SEBS"), tsn = 934083, 
+#                             lhs = "A1", gear = "CAN", trawl_method = "S", catch0 = T)
+
 
 head(pollock)
 unique(pollock$region); unique(pollock$sample_year); unique(pollock[c("common_name", "lhs_code")])
@@ -74,22 +78,22 @@ ggplot() +
   # start with the data and set shape and size 
   geom_sf(data = poll.sf, mapping = aes(shape = wpue_kg == 0, size = log(wpue_kg+1)), stroke = 1.1, fill = "black") +
   # now set the specifics of the shape
-  scale_shape_manual(name = "Log WPUE (kg/km2)", values = c("FALSE" = 19, "TRUE" = 4),
+  scale_shape_manual(name = expression("Log WPUE (kg/km"^2*")"), values = c("FALSE" = 19, "TRUE" = 4),
                      labels = c("Catch", "Zero Catch"),
                      guide = "none") +
   # use psedo log cause it deals with no 0s okay
-  scale_size_continuous(name = "Log WPUE (kg/km2)",
+  scale_size_continuous(name = expression("Log WPUE (kg/km"^2*")"),
     range = c(1.5,6),          # point diameter here min/max
     #trans = "sqrt",
     labels = scales::label_comma(),
-    breaks = c(0, 1, 2, 3, 4, 5, 6)
+    #breaks = c(0, 1, 2, 3, 4, 5, 6)
     ) +
   # put all aes things into a single legend
-  guides(size = guide_legend(override.aes = list(shape = c(4, 19, 19, 19, 19, 19, 19), # First break (0) gets 'X' (4), rest get open circle (1)
-                                                 size = c(1.5, 1.5, 2, 3, 4, 5, 6),
+  guides(size = guide_legend(override.aes = list(shape = c(4, 19, 19, 19, 19), # First break (0) gets 'X' (4), rest get open circle (1)
+                                                 size = c(1.5, 1.5, 2, 3, 4),
                                                  stroke = 1.1))) +
   theme_bw() +
-  labs(x = "Longitude", y = "Latitude", title = paste(this.year, "Catches of Age-0 Walleye Pollock")) +
+  labs(x = "Longitude", y = "Latitude", title = paste(this.year, "Age -", unique(poll.sf$lhs_code), "Walleye Pollock")) +
   # now all the background stuff: 
   # add base background
   geom_sf(data = bs_base, fill = "gray", color = "black", inherit.aes = F) +
